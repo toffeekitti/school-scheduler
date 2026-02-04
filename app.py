@@ -5,7 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Phi", layout="wide")
+st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Fee", layout="wide")
 
 # เชื่อมต่อ Google Sheets
 @st.cache_resource
@@ -743,3 +743,4 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
         )
     else:
         st.warning("ไม่พบข้อมูลการสอนในระดับชั้นที่เลือก")
+
