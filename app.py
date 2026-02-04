@@ -1,12 +1,22 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="ระบบจัดตารางสอน - Kru Phi", layout="wide")
-DATA_FILE = "school_schedule_db.json"
+st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Phi", layout="wide")
+
+# เชื่อมต่อ Google Sheets
+@st.cache_resource
+def init_connection():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    # อ่าน Secrets จากไฟล์ .streamlit/secrets.toml
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+    return gspread.authorize(creds)
+
+# ชื่อไฟล์ Google Sheets (ต้องตรงเป๊ะ)
+SHEET_NAME = "SchoolSchedulerDB"
 
 # ข้อมูลคาบเรียน
 PERIODS = {
@@ -19,113 +29,130 @@ PERIODS = {
 
 # ข้อมูลเวลาพัก (หลังคาบที่กำหนด)
 BREAKS = {
-    2: "พัก<br>15 นาที",
-    4: "พัก<br>กลางวัน",
-    6: "พัก<br>10 นาที",
-    8: "พัก<br>15 นาที"
+    2: "พัก<br>15 นาที", 4: "พัก<br>กลางวัน",
+    6: "พัก<br>10 นาที", 8: "พัก<br>15 นาที"
 }
 
-# รายชื่อสายการเรียน
 PROGRAM_OPTIONS = ["IEP", "EEP", "TEP", "TEP+", "SMEP", "SMEP+"]
-
 DAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"]
 
-# --- 2. ฟังก์ชันจัดการไฟล์ ---
+# --- 2. ฟังก์ชันจัดการข้อมูล (Google Sheets) ---
 
-def load_data_from_file():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            teachers_df = pd.DataFrame(data.get("teachers_data", []))
-            classrooms_df = pd.DataFrame(data.get("classrooms_data", []))
-            
-            if classrooms_df.empty:
-                classrooms_df = create_default_classrooms()
-
-            loaded_schedule = data.get("schedule_data", {})
-            current_rooms = classrooms_df["ห้องเรียน"].unique().tolist() if not classrooms_df.empty else []
-            
-            final_schedule = {}
-            for r in current_rooms:
-                final_schedule[r] = {d: {p: [] for p in range(1, 10)} for d in DAYS}
-            
-            for r in loaded_schedule:
-                if r not in final_schedule:
-                     final_schedule[r] = {d: {p: [] for p in range(1, 10)} for d in DAYS}
-                for d in loaded_schedule[r]:
-                    for p_str in loaded_schedule[r][d]:
-                        if int(p_str) in range(1, 10):
-                            final_schedule[r][d][int(p_str)] = loaded_schedule[r][d][p_str]
-                            
-            return final_schedule, teachers_df, classrooms_df
-        except Exception as e:
-            st.error(f"Error loading file: {e}")
-            return None, None, None
-    return None, None, None
-
-def save_data_to_file():
-    teachers_list = st.session_state.teachers_data.to_dict(orient="records")
-    classrooms_list = st.session_state.classrooms_data.to_dict(orient="records")
-    
-    save_package = {
-        "schedule_data": st.session_state.schedule_data,
-        "teachers_data": teachers_list,
-        "classrooms_data": classrooms_list
-    }
+def load_data_from_gsheets():
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(save_package, f, ensure_ascii=False, indent=4)
+        client = init_connection()
+        sh = client.open(SHEET_NAME)
+        
+        # 1. Load Teachers
+        w_teach = sh.worksheet("Teachers")
+        teachers_data = w_teach.get_all_records()
+        teachers_df = pd.DataFrame(teachers_data)
+        
+        # 2. Load Classrooms
+        w_class = sh.worksheet("Classrooms")
+        class_data = w_class.get_all_records()
+        classrooms_df = pd.DataFrame(class_data)
+        
+        if classrooms_df.empty:
+            classrooms_df = create_default_classrooms()
+            
+        # 3. Load Schedule
+        try:
+            w_sched = sh.worksheet("Schedule")
+            sched_records = w_sched.get_all_records()
+        except:
+            sched_records = []
+            
+        current_rooms = classrooms_df["ห้องเรียน"].unique().tolist()
+        final_schedule = {r: {d: {p: [] for p in range(1, 10)} for d in DAYS} for r in current_rooms}
+        
+        for row in sched_records:
+            r = row['Room']
+            d = row['Day']
+            p = int(row['Period'])
+            if r in final_schedule and d in DAYS and p in range(1, 10):
+                final_schedule[r][d][p].append({
+                    "teacher": row['Teacher'],
+                    "subject": row['Subject'],
+                    "program": row['Program']
+                })
+                
+        return final_schedule, teachers_df, classrooms_df
+        
     except Exception as e:
-        st.error(f"Save failed: {e}")
+        st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheets: {e}")
+        st.stop() # หยุดการทำงานถ้าระบบโหลดไม่ได้
+        return None, None, None
+
+def save_data_to_gsheets():
+    try:
+        client = init_connection()
+        sh = client.open(SHEET_NAME)
+        
+        # 1. Save Teachers
+        w_teach = sh.worksheet("Teachers")
+        w_teach.clear()
+        if not st.session_state.teachers_data.empty:
+            t_data = [st.session_state.teachers_data.columns.tolist()] + st.session_state.teachers_data.astype(str).values.tolist()
+            w_teach.update(t_data)
+            
+        # 2. Save Classrooms
+        w_class = sh.worksheet("Classrooms")
+        w_class.clear()
+        if not st.session_state.classrooms_data.empty:
+            c_data = [st.session_state.classrooms_data.columns.tolist()] + st.session_state.classrooms_data.astype(str).values.tolist()
+            w_class.update(c_data)
+            
+        # 3. Save Schedule
+        w_sched = sh.worksheet("Schedule")
+        w_sched.clear()
+        
+        flat_data = []
+        headers = ["Room", "Day", "Period", "Teacher", "Subject", "Program"]
+        flat_data.append(headers)
+        
+        sched = st.session_state.schedule_data
+        for r in sched:
+            for d in sched[r]:
+                for p in sched[r][d]:
+                    for slot in sched[r][d][p]:
+                        flat_data.append([
+                            str(r), str(d), int(p), 
+                            str(slot['teacher']), str(slot['subject']), str(slot.get('program', 'รวม'))
+                        ])
+        
+        w_sched.update(flat_data)
+        st.toast("บันทึกข้อมูลลง Cloud เรียบร้อย!", icon="☁️")
+        
+    except Exception as e:
+        # --- DEBUG MODE: หยุดและแสดง Error ---
+        st.error(f"⛔ บันทึก Google Sheets ไม่สำเร็จ: {e}")
+        st.stop()
 
 def create_default_classrooms():
     default_rooms = []
     levels = ["ป.4", "ป.5", "ป.6"]
     for level in levels:
         for room in range(1, 14):
-            default_rooms.append({
-                "ห้องเรียน": f"{level}/{room}",
-                "สายการเรียน": "IEP"
-            })
+            default_rooms.append({"ห้องเรียน": f"{level}/{room}", "สายการเรียน": "IEP"})
     return pd.DataFrame(default_rooms)
 
 # --- 3. เตรียมหน่วยความจำ ---
 if 'data_initialized' not in st.session_state:
-    loaded_sched, loaded_teach, loaded_class = load_data_from_file()
+    with st.spinner('กำลังโหลดข้อมูลจาก Google Sheets...'):
+        loaded_sched, loaded_teach, loaded_class = load_data_from_gsheets()
     
-    if loaded_class is not None and not loaded_class.empty:
+    if loaded_sched is not None:
+        st.session_state.schedule_data = loaded_sched
+        st.session_state.teachers_data = loaded_teach
         st.session_state.classrooms_data = loaded_class
     else:
         st.session_state.classrooms_data = create_default_classrooms()
-        
-    current_room_list = st.session_state.classrooms_data["ห้องเรียน"].unique().tolist()
-
-    if loaded_sched is not None:
-        st.session_state.schedule_data = loaded_sched
-    else:
-        st.session_state.schedule_data = {
-            r: {d: {p: [] for p in range(1, 10)} for d in DAYS} 
-            for r in current_room_list
-        }
-
-    if loaded_teach is not None and not loaded_teach.empty:
-        st.session_state.teachers_data = loaded_teach
-    else:
-        default_teach = [
-            {"ชื่อ-สกุล": "ครูสมชาย", "วิชาที่สอน": "คณิตศาสตร์", "ระดับชั้นที่สอน": "ป.4/1"},
-            {"ชื่อ-สกุล": "ครูสมหญิง", "วิชาที่สอน": "วิทยาศาสตร์", "ระดับชั้นที่สอน": "ป.5/1"},
-        ]
-        st.session_state.teachers_data = pd.DataFrame(default_teach)
+        current_rooms = st.session_state.classrooms_data["ห้องเรียน"].unique().tolist()
+        st.session_state.schedule_data = {r: {d: {p: [] for p in range(1, 10)} for d in DAYS} for r in current_rooms}
+        st.session_state.teachers_data = pd.DataFrame([{"ชื่อ-สกุล": "ครูตัวอย่าง", "วิชาที่สอน": "ทดสอบ", "ระดับชั้นที่สอน": "-"}])
         
     st.session_state.data_initialized = True
-
-# Sync Schedule
-current_room_list = st.session_state.classrooms_data["ห้องเรียน"].unique().tolist()
-for r in current_room_list:
-    if r not in st.session_state.schedule_data:
-        st.session_state.schedule_data[r] = {d: {p: [] for p in range(1, 10)} for d in DAYS}
 
 if 'confirm_needed' not in st.session_state:
     st.session_state.confirm_needed = False
@@ -133,22 +160,20 @@ if 'pending_payload' not in st.session_state:
     st.session_state.pending_payload = {}
 
 # --- 4. ฟังก์ชันช่วย (Logic) ---
-
 def get_all_rooms():
+    if st.session_state.classrooms_data.empty: return []
     return st.session_state.classrooms_data["ห้องเรียน"].unique().tolist()
 
 def get_room_program(room_name):
     df = st.session_state.classrooms_data
     row = df[df["ห้องเรียน"] == room_name]
-    if not row.empty:
-        return row.iloc[0]["สายการเรียน"]
+    if not row.empty: return row.iloc[0]["สายการเรียน"]
     return "-"
 
 def get_teacher_subject(teacher_name):
     df = st.session_state.teachers_data
     row = df[df["ชื่อ-สกุล"] == teacher_name]
-    if not row.empty:
-        return str(row.iloc[0]["วิชาที่สอน"])
+    if not row.empty: return str(row.iloc[0]["วิชาที่สอน"])
     return ""
 
 def get_available_teachers(current_room, day, period):
@@ -156,14 +181,12 @@ def get_available_teachers(current_room, day, period):
     if all_teachers_df is None or all_teachers_df.empty: return []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
-    
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
         if r in st.session_state.schedule_data:
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots: busy_teachers.append(s['teacher'])
-            
     return [t for t in all_teachers if t not in busy_teachers], busy_teachers
 
 def check_fatigue(teacher_name, day, new_period, current_room):
@@ -175,11 +198,9 @@ def check_fatigue(teacher_name, day, new_period, current_room):
                 slots = st.session_state.schedule_data[r][day][p]
                 for s in slots:
                     if s['teacher'] == teacher_name: teaching_periods.append(p)
-    
     teaching_periods.append(new_period)
     teaching_periods = sorted(list(set(teaching_periods)))
-    consecutive = 1
-    max_consecutive = 1
+    consecutive, max_consecutive = 1, 1
     for i in range(1, len(teaching_periods)):
         if teaching_periods[i] == teaching_periods[i-1] + 1:
             consecutive += 1
@@ -189,125 +210,11 @@ def check_fatigue(teacher_name, day, new_period, current_room):
 
 def natural_sort_key(s):
     try:
-        if '/' in s:
-            parts = s.split('/')
-            return (parts[0], int(parts[1]))
+        if '/' in s: parts = s.split('/'); return (parts[0], int(parts[1]))
         return (s, 0)
-    except:
-        return (s, 0)
+    except: return (s, 0)
 
-# --- HTML Generator (Report) ---
-
-def generate_teacher_report_html():
-    teachers = st.session_state.teachers_data["ชื่อ-สกุล"].dropna().unique().tolist()
-    html = """<html><head><title>รายงานครู</title><style>
-            body { font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }
-            h1 { text-align: center; font-size: 28px; }
-            h3 { font-size: 24px; margin-bottom: 5px; }
-            .section { margin-bottom: 40px; page-break-inside: avoid; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid black; padding: 5px; text-align: center; font-size: 16px; vertical-align: top; }
-            th { background-color: #f0f0f0; font-weight: bold; }
-            .day-col { font-weight: bold; width: 80px; font-size: 18px; }
-            .break-col { background-color: #f5f5f5; color: #333; font-size: 14px; font-weight: bold; width: 40px; vertical-align: middle; }
-            .page-break { page-break-after: always; }
-        </style></head><body>
-        <h1>รายงานตารางสอนครูรายบุคคล</h1><hr>"""
-    
-    for i, t_name in enumerate(teachers):
-        teacher_info = st.session_state.teachers_data[st.session_state.teachers_data["ชื่อ-สกุล"] == t_name].iloc[0]
-        grade_info = teacher_info.get("ระดับชั้นที่สอน", "-")
-        html += f"""<div class="section"><h3>{i+1}. {t_name} <span style="font-size:0.8em; font-weight:normal;">(วิชา: {teacher_info['วิชาที่สอน']} | สอน: {grade_info})</span></h3>
-            <table><thead><tr><th class="day-col">วัน</th>"""
-        
-        for p in range(1, 10):
-            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
-            if p in BREAKS:
-                html += f"<th class='break-col'></th>"
-        
-        html += "</tr></thead><tbody>"
-        for idx, d in enumerate(DAYS):
-            html += f"<tr><td class='day-col'>{d}</td>"
-            for p in range(1, 10):
-                cell_content = []
-                for r in get_all_rooms():
-                    if r in st.session_state.schedule_data:
-                        slots = st.session_state.schedule_data[r][d][p]
-                        for s in slots:
-                            if s['teacher'] == t_name: 
-                                prog_label = f" <span style='font-size:0.8em; color:#555;'>[{s.get('program', 'รวม')}]</span>"
-                                cell_content.append(f"{s['subject']}{prog_label}<br>({r})")
-                if cell_content: html += f"<td>{'<hr style=`margin:2px`>'.join(cell_content)}</td>"
-                else: html += "<td>-</td>"
-                
-                # [ROWSPAN] Break Column
-                if p in BREAKS:
-                    if idx == 0: # Monday only
-                        html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
-                    
-            html += "</tr>"
-        html += "</tbody></table></div><div class='page-break'></div>"
-    html += "</body></html>"
-    return html
-
-def generate_grade_report_html(target_level):
-    all_rooms = get_all_rooms()
-    target_rooms = [r for r in all_rooms if target_level in r]
-    target_rooms.sort(key=natural_sort_key)
-    
-    html = f"""<html><head><title>ตารางเรียน {target_level}</title><style>
-            body {{ font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }}
-            h1 {{ text-align: center; font-size: 28px; }}
-            h3 {{ font-size: 24px; margin-bottom: 5px; }}
-            .section {{ margin-bottom: 40px; page-break-inside: avoid; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-            th, td {{ border: 1px solid black; padding: 5px; text-align: center; font-size: 16px; vertical-align: top; }}
-            th {{ background-color: #e3f2fd; font-weight: bold; }}
-            .day-col {{ font-weight: bold; width: 80px; font-size: 18px; }}
-            .break-col {{ background-color: #f5f5f5; color: #333; font-size: 14px; font-weight: bold; width: 40px; vertical-align: middle; }}
-            .page-break {{ page-break-after: always; }}
-            .subject {{ font-weight: bold; font-size: 1.1em; }}
-            .teacher {{ font-size: 0.9em; }}
-            .prog-badge {{ font-size: 0.8em; background-color: #ddd; padding: 2px 4px; border-radius: 4px; margin-left: 4px; }}
-        </style></head><body>
-        <h1>ตารางเรียนระดับชั้น {target_level}</h1><p style='text-align:center'>ข้อมูล ณ {datetime.now().strftime("%d/%m/%Y %H:%M")}</p><hr>"""
-    
-    for room in target_rooms:
-        program = get_room_program(room)
-        html += f"""<div class="section"><h3>ห้องเรียน: {room} <span style="font-size:0.8em; color:#555;">(สายการเรียน: {program})</span></h3>
-            <table><thead><tr><th class="day-col">วัน</th>"""
-        
-        for p in range(1, 10):
-            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
-            if p in BREAKS:
-                html += f"<th class='break-col'></th>"
-
-        html += "</tr></thead><tbody>"
-        for idx, d in enumerate(DAYS):
-            html += f"<tr><td class='day-col'>{d}</td>"
-            for p in range(1, 10):
-                slots = st.session_state.schedule_data[room][d][p]
-                if not slots: cell = "-"
-                else:
-                    items = []
-                    for s in slots:
-                        prog_text = s.get('program', 'รวม')
-                        prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
-                        items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
-                    cell = "<hr style='margin:2px'>".join(items)
-                html += f"<td>{cell}</td>"
-                
-                # [ROWSPAN] Break Column
-                if p in BREAKS:
-                    if idx == 0:
-                        html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
-                    
-            html += "</tr>"
-        html += "</tbody></table></div><div class='page-break'></div>"
-    html += "</body></html>"
-    return html
-
-# --- UI Renderers ---
+# --- UI Renderers (Rowspan Included) ---
 
 def render_beautiful_table(grade, data_source, filter_program=None):
     html = """<style>
@@ -322,13 +229,9 @@ def render_beautiful_table(grade, data_source, filter_program=None):
         .program-tag { font-size: 0.75em; background-color: #FFC107; color: #000; padding: 1px 4px; border-radius: 4px; margin-left: 5px; font-weight: normal; }
         .break-col { background-color: #333; color: #AAA; font-size: 0.8em; width: 40px; vertical-align: middle; font-weight: bold;}
     </style><table><thead><tr><th class="day-col" style="color:#FFF">วัน</th>"""
-    
-    # Header
     for p in range(1, 10):
         html += f"<th>{p}<br><span style='font-size:0.75em; color:#AAA'>{PERIODS[p]}</span></th>"
-        if p in BREAKS:
-            html += "<th class='break-col'></th>"
-            
+        if p in BREAKS: html += "<th class='break-col'></th>"
     html += "</tr></thead><tbody>"
     for idx, d in enumerate(DAYS):
         html += f"<tr><td class='day-col'>{d}</td>"
@@ -348,12 +251,8 @@ def render_beautiful_table(grade, data_source, filter_program=None):
             if not cell_items: cell_html = "<span class='empty'>-</span>"
             else: cell_html = "<div class='divider'></div>".join(cell_items)
             html += f"<td>{cell_html}</td>"
-            
-            # [ROWSPAN] Break Column Data
             if p in BREAKS:
-                if idx == 0: # Check if first row
-                    html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
-                
+                if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
         html += "</tr>"
     html += "</tbody></table>"
     return html
@@ -373,17 +272,10 @@ def render_master_matrix_html(room_list, data_source):
         .empty { color: #333; }
         .break-col { background-color: #333; color: #AAA; font-size: 0.75em; width: 40px; vertical-align: middle; font-weight: bold;}
     </style>
-    <table>
-    <thead>
-        <tr>
-            <th class="room-col">ห้องเรียน</th>
-            <th class="day-col">วัน</th>
-    """
+    <table><thead><tr><th class="room-col">ห้องเรียน</th><th class="day-col">วัน</th>"""
     for p in range(1, 10):
         html += f"<th>{p}<br><span style='font-size:0.7em; color:#AAA'>{PERIODS[p]}</span></th>"
-        if p in BREAKS:
-            html += "<th class='break-col'></th>"
-            
+        if p in BREAKS: html += "<th class='break-col'></th>"
     html += "</tr></thead><tbody>"
     
     for r in room_list:
@@ -391,8 +283,7 @@ def render_master_matrix_html(room_list, data_source):
         for i, d in enumerate(DAYS):
             row_class = "row-separator" if d == "ศุกร์" else ""
             html += f"<tr class='{row_class}'>"
-            if i == 0:
-                html += f"<td class='room-col' rowspan='5'>{r}<br><span style='font-size:0.75em; color:#B0BEC5; font-weight:normal;'>{program}</span></td>"
+            if i == 0: html += f"<td class='room-col' rowspan='5'>{r}<br><span style='font-size:0.75em; color:#B0BEC5; font-weight:normal;'>{program}</span></td>"
             html += f"<td class='day-col'>{d}</td>"
             for p in range(1, 10):
                 if r in data_source:
@@ -407,14 +298,100 @@ def render_master_matrix_html(room_list, data_source):
                         cell_html = "<hr style='margin:2px; border-color:#444;'>".join(items)
                 else: cell_html = "-"
                 html += f"<td>{cell_html}</td>"
-                
-                # [ROWSPAN] Break Column for Master View
-                # Note: In Master View, each room has 5 rows. So rowspan=5 logic applies per room block.
                 if p in BREAKS:
-                    if i == 0:
-                        html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+                    if i == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
             html += "</tr>"
     html += "</tbody></table>"
+    return html
+
+def generate_teacher_report_html():
+    teachers = st.session_state.teachers_data["ชื่อ-สกุล"].dropna().unique().tolist()
+    html = """<html><head><title>รายงานครู</title><style>
+            body { font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }
+            h1 { text-align: center; font-size: 28px; }
+            h3 { font-size: 24px; margin-bottom: 5px; }
+            .section { margin-bottom: 40px; page-break-inside: avoid; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid black; padding: 5px; text-align: center; font-size: 16px; vertical-align: top; }
+            th { background-color: #f0f0f0; font-weight: bold; }
+            .day-col { font-weight: bold; width: 80px; font-size: 18px; }
+            .break-col { background-color: #f5f5f5; color: #333; font-size: 14px; font-weight: bold; width: 40px; vertical-align: middle; }
+            .page-break { page-break-after: always; }
+        </style></head><body><h1>รายงานตารางสอนครูรายบุคคล</h1><hr>"""
+    for i, t_name in enumerate(teachers):
+        teacher_info = st.session_state.teachers_data[st.session_state.teachers_data["ชื่อ-สกุล"] == t_name].iloc[0]
+        grade_info = teacher_info.get("ระดับชั้นที่สอน", "-")
+        html += f"""<div class="section"><h3>{i+1}. {t_name} <span style="font-size:0.8em; font-weight:normal;">(วิชา: {teacher_info['วิชาที่สอน']} | สอน: {grade_info})</span></h3>
+            <table><thead><tr><th class="day-col">วัน</th>"""
+        for p in range(1, 10):
+            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
+            if p in BREAKS: html += f"<th class='break-col'></th>"
+        html += "</tr></thead><tbody>"
+        for idx, d in enumerate(DAYS):
+            html += f"<tr><td class='day-col'>{d}</td>"
+            for p in range(1, 10):
+                cell_content = []
+                for r in get_all_rooms():
+                    if r in st.session_state.schedule_data:
+                        slots = st.session_state.schedule_data[r][d][p]
+                        for s in slots:
+                            if s['teacher'] == t_name: 
+                                prog_label = f" <span style='font-size:0.8em; color:#555;'>[{s.get('program', 'รวม')}]</span>"
+                                cell_content.append(f"{s['subject']}{prog_label}<br>({r})")
+                if cell_content: html += f"<td>{'<hr style=`margin:2px`>'.join(cell_content)}</td>"
+                else: html += "<td>-</td>"
+                if p in BREAKS:
+                    if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+            html += "</tr>"
+        html += "</tbody></table></div><div class='page-break'></div>"
+    html += "</body></html>"
+    return html
+
+def generate_grade_report_html(target_level):
+    all_rooms = get_all_rooms()
+    target_rooms = [r for r in all_rooms if target_level in r]
+    target_rooms.sort(key=natural_sort_key)
+    html = f"""<html><head><title>ตารางเรียน {target_level}</title><style>
+            body {{ font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }}
+            h1 {{ text-align: center; font-size: 28px; }}
+            h3 {{ font-size: 24px; margin-bottom: 5px; }}
+            .section {{ margin-bottom: 40px; page-break-inside: avoid; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ border: 1px solid black; padding: 5px; text-align: center; font-size: 16px; vertical-align: top; }}
+            th {{ background-color: #e3f2fd; font-weight: bold; }}
+            .day-col {{ font-weight: bold; width: 80px; font-size: 18px; }}
+            .break-col {{ background-color: #f5f5f5; color: #333; font-size: 14px; font-weight: bold; width: 40px; vertical-align: middle; }}
+            .page-break {{ page-break-after: always; }}
+            .subject {{ font-weight: bold; font-size: 1.1em; }}
+            .teacher {{ font-size: 0.9em; }}
+            .prog-badge {{ font-size: 0.8em; background-color: #ddd; padding: 2px 4px; border-radius: 4px; margin-left: 4px; }}
+        </style></head><body><h1>ตารางเรียนระดับชั้น {target_level}</h1><p style='text-align:center'>ข้อมูล ณ {datetime.now().strftime("%d/%m/%Y %H:%M")}</p><hr>"""
+    for room in target_rooms:
+        program = get_room_program(room)
+        html += f"""<div class="section"><h3>ห้องเรียน: {room} <span style="font-size:0.8em; color:#555;">(สายการเรียน: {program})</span></h3>
+            <table><thead><tr><th class="day-col">วัน</th>"""
+        for p in range(1, 10):
+            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
+            if p in BREAKS: html += f"<th class='break-col'></th>"
+        html += "</tr></thead><tbody>"
+        for idx, d in enumerate(DAYS):
+            html += f"<tr><td class='day-col'>{d}</td>"
+            for p in range(1, 10):
+                slots = st.session_state.schedule_data[room][d][p]
+                if not slots: cell = "-"
+                else:
+                    items = []
+                    for s in slots:
+                        prog_text = s.get('program', 'รวม')
+                        prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
+                        items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
+                    cell = "<hr style='margin:2px'>".join(items)
+                html += f"<td>{cell}</td>"
+                if p in BREAKS:
+                    if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+            html += "</tr>"
+        html += "</tbody></table></div><div class='page-break'></div>"
+    html += "</body></html>"
     return html
 
 # --- 5. หน้าจอหลัก (เมนู) ---
@@ -490,7 +467,7 @@ elif menu == "2. 📅 จัดตารางสอน":
             
         if btn_clear:
             st.session_state.schedule_data[selected_grade][sel_day][sel_period] = []
-            save_data_to_file()
+            save_data_to_gsheets()
             st.success("ล้างข้อมูลเรียบร้อย"); st.rerun()
             
         if btn_add:
@@ -501,7 +478,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                 entry_data = {"teacher": sel_teacher, "subject": get_teacher_subject(sel_teacher), "program": sel_target_prog}
                 if is_safe:
                     st.session_state.schedule_data[selected_grade][sel_day][sel_period].append(entry_data)
-                    save_data_to_file()
+                    save_data_to_gsheets()
                     st.success(f"✅ เพิ่มสำเร็จ ({sel_target_prog})"); st.rerun()
                 else:
                     st.session_state.confirm_needed = True
@@ -513,7 +490,7 @@ elif menu == "2. 📅 จัดตารางสอน":
             if c1.button("✅ ยืนยัน"):
                 g, d, p = payload['grade'], payload['day'], payload['period']
                 st.session_state.schedule_data[g][d][p].append(payload['entry_data'])
-                save_data_to_file(); st.session_state.confirm_needed = False; st.success("บันทึกเรียบร้อย"); st.rerun()
+                save_data_to_gsheets(); st.session_state.confirm_needed = False; st.success("บันทึกเรียบร้อย"); st.rerun()
             if c2.button("❌ ยกเลิก"): st.session_state.confirm_needed = False; st.rerun()
 
         st.markdown("---")
@@ -525,7 +502,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                 for d in DAYS:
                     for p in range(1, 10):
                         st.session_state.schedule_data[selected_grade][d][p] = []
-                save_data_to_file()
+                save_data_to_gsheets()
                 st.success(f"ล้างข้อมูลห้อง {selected_grade} เรียบร้อยแล้ว")
                 st.rerun()
         
@@ -585,12 +562,12 @@ elif menu == "3. 👥 ข้อมูลของครู":
                     new_row = pd.DataFrame([{"ชื่อ-สกุล": input_name, "วิชาที่สอน": input_subject, "ระดับชั้นที่สอน": rooms_string}])
                     st.session_state.teachers_data = pd.concat([df, new_row], ignore_index=True)
                     st.success(f"✅ เพิ่มครูใหม่ {input_name} เรียบร้อย")
-                save_data_to_file()
+                save_data_to_gsheets()
                 st.rerun()
     if selected_option != "-- เพิ่มครูคนใหม่ --":
         if st.button("🗑️ ลบครูท่านนี้", type="secondary"):
              st.session_state.teachers_data = st.session_state.teachers_data[st.session_state.teachers_data["ชื่อ-สกุล"] != selected_option]
-             save_data_to_file()
+             save_data_to_gsheets()
              st.success("ลบเรียบร้อย"); st.rerun()
 
     st.markdown("---")
@@ -641,12 +618,12 @@ elif menu == "4. 🏫 ข้อมูลห้องเรียน":
                     new_row = pd.DataFrame([{"ห้องเรียน": input_room_name, "สายการเรียน": programs_str}])
                     st.session_state.classrooms_data = pd.concat([df, new_row], ignore_index=True)
                     st.success(f"✅ เพิ่มห้อง {input_room_name} เรียบร้อย")
-                save_data_to_file()
+                save_data_to_gsheets()
                 st.rerun()
     if selected_room_opt != "-- เพิ่มห้องใหม่ --":
         if st.button("🗑️ ลบห้องเรียนนี้", type="secondary"):
              st.session_state.classrooms_data = st.session_state.classrooms_data[st.session_state.classrooms_data["ห้องเรียน"] != selected_room_opt]
-             save_data_to_file()
+             save_data_to_gsheets()
              st.success("ลบเรียบร้อย"); st.rerun()
 
     st.markdown("---")
