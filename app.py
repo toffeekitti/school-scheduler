@@ -5,17 +5,15 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Fee", layout="wide")
+st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Phi", layout="wide")
 
 # เชื่อมต่อ Google Sheets
 @st.cache_resource
 def init_connection():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # อ่าน Secrets จากไฟล์ .streamlit/secrets.toml
     creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
     return gspread.authorize(creds)
 
-# ชื่อไฟล์ Google Sheets (ต้องตรงเป๊ะ)
 SHEET_NAME = "SchoolSchedulerDB"
 
 # ข้อมูลคาบเรียน
@@ -26,13 +24,10 @@ PERIODS = {
     7: "14.00-14.45", 8: "14.45-15.30",
     9: "15.45-16.30"
 }
-
-# ข้อมูลเวลาพัก (หลังคาบที่กำหนด)
 BREAKS = {
     2: "พัก<br>15 นาที", 4: "พัก<br>กลางวัน",
     6: "พัก<br>10 นาที", 8: "พัก<br>15 นาที"
 }
-
 PROGRAM_OPTIONS = ["IEP", "EEP", "TEP", "TEP+", "SMEP", "SMEP+"]
 DAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"]
 
@@ -43,12 +38,10 @@ def load_data_from_gsheets():
         client = init_connection()
         sh = client.open(SHEET_NAME)
         
-        # 1. Load Teachers
         w_teach = sh.worksheet("Teachers")
         teachers_data = w_teach.get_all_records()
         teachers_df = pd.DataFrame(teachers_data)
         
-        # 2. Load Classrooms
         w_class = sh.worksheet("Classrooms")
         class_data = w_class.get_all_records()
         classrooms_df = pd.DataFrame(class_data)
@@ -56,7 +49,6 @@ def load_data_from_gsheets():
         if classrooms_df.empty:
             classrooms_df = create_default_classrooms()
             
-        # 3. Load Schedule
         try:
             w_sched = sh.worksheet("Schedule")
             sched_records = w_sched.get_all_records()
@@ -81,7 +73,7 @@ def load_data_from_gsheets():
         
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheets: {e}")
-        st.stop() # หยุดการทำงานถ้าระบบโหลดไม่ได้
+        st.stop()
         return None, None, None
 
 def save_data_to_gsheets():
@@ -89,21 +81,18 @@ def save_data_to_gsheets():
         client = init_connection()
         sh = client.open(SHEET_NAME)
         
-        # 1. Save Teachers
         w_teach = sh.worksheet("Teachers")
         w_teach.clear()
         if not st.session_state.teachers_data.empty:
             t_data = [st.session_state.teachers_data.columns.tolist()] + st.session_state.teachers_data.astype(str).values.tolist()
             w_teach.update(t_data)
             
-        # 2. Save Classrooms
         w_class = sh.worksheet("Classrooms")
         w_class.clear()
         if not st.session_state.classrooms_data.empty:
             c_data = [st.session_state.classrooms_data.columns.tolist()] + st.session_state.classrooms_data.astype(str).values.tolist()
             w_class.update(c_data)
             
-        # 3. Save Schedule
         w_sched = sh.worksheet("Schedule")
         w_sched.clear()
         
@@ -125,7 +114,6 @@ def save_data_to_gsheets():
         st.toast("บันทึกข้อมูลลง Cloud เรียบร้อย!", icon="☁️")
         
     except Exception as e:
-        # --- DEBUG MODE: หยุดและแสดง Error ---
         st.error(f"⛔ บันทึก Google Sheets ไม่สำเร็จ: {e}")
         st.stop()
 
@@ -159,7 +147,7 @@ if 'confirm_needed' not in st.session_state:
 if 'pending_payload' not in st.session_state:
     st.session_state.pending_payload = {}
 
-# --- 4. ฟังก์ชันช่วย (Logic) ---
+# --- 4. ฟังก์ชันช่วย ---
 def get_all_rooms():
     if st.session_state.classrooms_data.empty: return []
     return st.session_state.classrooms_data["ห้องเรียน"].unique().tolist()
@@ -214,7 +202,7 @@ def natural_sort_key(s):
         return (s, 0)
     except: return (s, 0)
 
-# --- UI Renderers (Rowspan Included) ---
+# --- 5. UI Renderers ---
 
 def render_beautiful_table(grade, data_source, filter_program=None):
     html = """<style>
@@ -277,7 +265,6 @@ def render_master_matrix_html(room_list, data_source):
         html += f"<th>{p}<br><span style='font-size:0.7em; color:#AAA'>{PERIODS[p]}</span></th>"
         if p in BREAKS: html += "<th class='break-col'></th>"
     html += "</tr></thead><tbody>"
-    
     for r in room_list:
         program = get_room_program(r)
         for i, d in enumerate(DAYS):
@@ -394,7 +381,7 @@ def generate_grade_report_html(target_level):
     html += "</body></html>"
     return html
 
-# --- 5. หน้าจอหลัก (เมนู) ---
+# --- 6. เมนูหลัก ---
 menu = st.sidebar.radio("เมนูหลัก", [
     "1. 🗓️ ตารางเรียนรวม (Master View)",
     "2. 📅 จัดตารางสอน", 
@@ -404,16 +391,11 @@ menu = st.sidebar.radio("เมนูหลัก", [
     "6. 📊 Dashboard สรุปยอด"
 ])
 
-# ==========================================
-# เมนู 1: Master View
-# ==========================================
 if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
     st.header("🗓️ ตารางเรียนรวม (Master Schedule View)")
     st.info("💡 เลือก 'ระดับชั้น' ด้านล่าง ระบบจะแสดงตารางรวมของห้องเรียนทุกห้องในระดับชั้นนั้น พร้อมกัน 5 วันครับ")
-    
     all_rooms = get_all_rooms()
     unique_levels = sorted(list(set([r.split('/')[0] for r in all_rooms if '/' in r])))
-    
     if not unique_levels:
         st.warning("ยังไม่มีข้อมูลห้องเรียนในระบบ")
     else:
@@ -424,105 +406,159 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# ==========================================
-# เมนู 2: จัดตารางสอน
-# ==========================================
+# === [UPDATED] MENU 2: จัดตารางสอน พร้อม Grid Editor ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
-    
     current_rooms_list = get_all_rooms()
+    
     if not current_rooms_list:
         st.warning("⚠️ ยังไม่มีข้อมูลห้องเรียน กรุณาไปเพิ่มที่เมนู 'ข้อมูลห้องเรียน' ก่อนครับ")
     else:
         selected_grade = st.selectbox("เลือกห้องเรียน:", current_rooms_list)
         program_str = get_room_program(selected_grade)
-        
+        programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
         st.caption(f"🎓 สายการเรียน: **{program_str}**")
         st.markdown("---")
 
-        # 1. Edit Section
-        st.subheader("📝 แก้ไข/ลงตารางเรียน")
-        programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
-        target_prog_options = ["รวมทุกสาย"] + programs_list
-        
-        col1, col2, col3, col4, col5 = st.columns([1, 1, 1.5, 1.2, 1])
-        with col1: sel_day = st.selectbox("1. เลือกวัน", DAYS)
-        with col2: 
-            period_opts = {k: f"{k} ({v})" for k, v in PERIODS.items()}
-            sel_period = st.selectbox("2. เลือกเวลา", list(PERIODS.keys()), format_func=lambda x: period_opts[x])
-        with col3:
-            available_teachers, busy_list = get_available_teachers(selected_grade, sel_day, sel_period)
-            options = ["-- เลือกครู --"] + available_teachers
-            sel_teacher = st.selectbox("3. เลือกครู (เฉพาะที่ว่าง)", options)
-        with col4: 
-            sel_target_prog = st.selectbox("4. สอนสายไหน?", target_prog_options)
-            current_slots = st.session_state.schedule_data[selected_grade][sel_day][sel_period]
-            if len(current_slots) == 0: st.info("ℹ️ ว่าง")
-            elif len(current_slots) == 1: st.warning(f"ℹ️ มี 1 วิชา")
-            else: st.error("⛔ เต็มแล้ว")
-        with col5:
-            st.write(""); st.write("")
-            btn_add = st.button("➕ เพิ่ม", type="primary", use_container_width=True)
-            btn_clear = st.button("🗑️ ล้าง", type="secondary", use_container_width=True)
-            
-        if btn_clear:
-            st.session_state.schedule_data[selected_grade][sel_day][sel_period] = []
-            save_data_to_gsheets()
-            st.success("ล้างข้อมูลเรียบร้อย"); st.rerun()
-            
-        if btn_add:
-            if sel_teacher == "-- เลือกครู --": st.error("กรุณาเลือกชื่อครูก่อน")
-            elif len(st.session_state.schedule_data[selected_grade][sel_day][sel_period]) >= 2: st.error("❌ เต็มแล้ว (Max 2)")
-            else:
-                is_safe, periods_list = check_fatigue(sel_teacher, sel_day, sel_period, selected_grade)
-                entry_data = {"teacher": sel_teacher, "subject": get_teacher_subject(sel_teacher), "program": sel_target_prog}
-                if is_safe:
-                    st.session_state.schedule_data[selected_grade][sel_day][sel_period].append(entry_data)
-                    save_data_to_gsheets()
-                    st.success(f"✅ เพิ่มสำเร็จ ({sel_target_prog})"); st.rerun()
-                else:
-                    st.session_state.confirm_needed = True
-                    st.session_state.pending_payload = {"entry_data": entry_data, "grade": selected_grade, "day": sel_day, "period": sel_period, "periods_list": periods_list, "teacher": sel_teacher}
-        if st.session_state.confirm_needed:
-            payload = st.session_state.pending_payload
-            st.warning(f"⚠️ **แจ้งเตือน:** ครู {payload['teacher']} สอนติดกันเกิน 2 คาบแล้ว ({payload['periods_list']})")
-            c1, c2 = st.columns(2)
-            if c1.button("✅ ยืนยัน"):
-                g, d, p = payload['grade'], payload['day'], payload['period']
-                st.session_state.schedule_data[g][d][p].append(payload['entry_data'])
-                save_data_to_gsheets(); st.session_state.confirm_needed = False; st.success("บันทึกเรียบร้อย"); st.rerun()
-            if c2.button("❌ ยกเลิก"): st.session_state.confirm_needed = False; st.rerun()
+        # --- ส่วนเลือกโหมด ---
+        col_mode1, col_mode2 = st.columns([0.7, 0.3])
+        with col_mode1:
+            st.subheader(f"👀 ตารางเรียน: {selected_grade}")
+        with col_mode2:
+            edit_mode = st.toggle("✏️ โหมดแก้ไขตารางแบบด่วน (Grid Editor)", value=False)
 
-        st.markdown("---")
+        if edit_mode:
+            st.info("💡 **โหมดแก้ไขด่วน:** คลิกที่ช่องในตารางแล้วเลือกชื่อครูได้เลย (แก้ไขเสร็จกดปุ่มบันทึกด้านล่าง)")
+            
+            # เตรียมข้อมูลสำหรับ Grid
+            # ถ้ามีหลายสายการเรียน ต้องเลือกก่อนว่าจะแก้ของสายไหน
+            target_prog_for_edit = "รวมทุกสาย"
+            if len(programs_list) > 1:
+                target_prog_for_edit = st.selectbox("เลือกสายการเรียนที่จะแก้ไข:", ["รวมทุกสาย"] + programs_list)
 
-        # 2. Reset Button
+            # เตรียม Dataframe (Rows=Periods, Cols=Days)
+            grid_data = []
+            for p in range(1, 10):
+                row_dict = {"คาบที่": f"{p} ({PERIODS[p]})"}
+                for d in DAYS:
+                    # ดึงชื่อครูคนแรกที่เจอใน slot นั้น (ที่ตรงกับสายการเรียนที่เลือก)
+                    slots = st.session_state.schedule_data[selected_grade][d][p]
+                    teacher_name = None
+                    for s in slots:
+                        if s.get('program', 'รวมทุกสาย') == target_prog_for_edit or target_prog_for_edit == "รวมทุกสาย":
+                            teacher_name = s['teacher']
+                            break # เอาคนแรกพอ
+                    row_dict[d] = teacher_name
+                grid_data.append(row_dict)
+            
+            df_grid = pd.DataFrame(grid_data)
+            
+            # ดึงรายชื่อครูทั้งหมดสำหรับ Dropdown
+            all_teachers_list = st.session_state.teachers_data["ชื่อ-สกุล"].unique().tolist()
+            
+            # Config ให้ทุกคอลัมน์เป็น Dropdown
+            column_config = {
+                "คาบที่": st.column_config.TextColumn("เวลาเรียน", disabled=True),
+            }
+            for d in DAYS:
+                column_config[d] = st.column_config.SelectboxColumn(
+                    d,
+                    options=all_teachers_list,
+                    required=False,
+                    width="medium"
+                )
+
+            # แสดง Editor
+            edited_df = st.data_editor(
+                df_grid,
+                column_config=column_config,
+                hide_index=True,
+                use_container_width=True,
+                key="schedule_editor"
+            )
+
+            # ปุ่มบันทึก
+            if st.button("💾 บันทึกการแก้ไข (Save Grid)", type="primary", use_container_width=True):
+                # อัปเดตข้อมูลกลับเข้า session_state
+                for index, row in edited_df.iterrows():
+                    p = index + 1 # Period (1-9)
+                    for d in DAYS:
+                        new_teacher = row[d]
+                        # 1. เช็คว่าค่าเปลี่ยนไหม? (ข้ามเพื่อความเร็ว ถ้าไม่เปลี่ยน)
+                        # 2. ถ้ามีชื่อครู -> อัปเดต/เพิ่ม
+                        if new_teacher:
+                            # หาข้อมูลวิชาครู
+                            subj = get_teacher_subject(new_teacher)
+                            # สร้าง Payload ใหม่
+                            new_slot = {"teacher": new_teacher, "subject": subj, "program": target_prog_for_edit}
+                            
+                            # Logic: ถ้าใน slot นั้นมีข้อมูลอยู่แล้ว จะทำยังไง?
+                            # Grid Editor นี้ออกแบบมาสำหรับ "ทับ" ข้อมูลเดิม (กรณี 1 ห้อง 1 ครู)
+                            # แต่ถ้าเป็นห้องเรียนรวม (มีหลายครูสอนพร้อมกัน) อาจจะต้องระวัง
+                            # วิธีที่ปลอดภัย: ลบของเก่าที่ตรงเงื่อนไขออก แล้วใส่ใหม่
+                            
+                            current_slots = st.session_state.schedule_data[selected_grade][d][p]
+                            # กรองเอา slot อื่นที่ไม่ใช่ program นี้เก็บไว้
+                            kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
+                            # เพิ่มอันใหม่เข้าไป
+                            kept_slots.append(new_slot)
+                            st.session_state.schedule_data[selected_grade][d][p] = kept_slots
+                        
+                        else:
+                            # ถ้าเป็นค่าว่าง (None) -> แปลว่าลบออก
+                            current_slots = st.session_state.schedule_data[selected_grade][d][p]
+                            kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
+                            st.session_state.schedule_data[selected_grade][d][p] = kept_slots
+
+                save_data_to_gsheets()
+                st.success("บันทึกข้อมูลเรียบร้อยแล้ว!")
+                st.rerun()
+
+        else:
+            # --- โหมดปกติ (HTML View + Form) ---
+            html_table = render_beautiful_table(selected_grade, st.session_state.schedule_data)
+            st.markdown(html_table, unsafe_allow_html=True)
+            
+            # Show split tables if needed
+            if len(programs_list) > 1:
+                st.markdown("---")
+                for prog in programs_list:
+                    st.write("")
+                    st.subheader(f"🔷 ตารางเรียนสำหรับสาย: {prog}")
+                    st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
+            
+            st.markdown("---")
+            # (ฟอร์มเพิ่มวิชาแบบเดิม ใส่ไว้ด้านล่างเผื่อกรณีซับซ้อน)
+            with st.expander("➕ เพิ่มวิชาแบบละเอียด (Form Mode)"):
+                target_prog_options = ["รวมทุกสาย"] + programs_list
+                c1, c2, c3, c4 = st.columns([1, 1, 1.5, 1.2])
+                with c1: s_day = st.selectbox("วัน", DAYS)
+                with c2: s_period = st.selectbox("คาบ", list(PERIODS.keys()))
+                with c3: 
+                    avail, _ = get_available_teachers(selected_grade, s_day, s_period)
+                    s_teacher = st.selectbox("ครู", ["-- เลือก --"] + avail)
+                with c4: s_prog = st.selectbox("สาย", target_prog_options)
+                
+                if st.button("เพิ่มวิชา"):
+                    if s_teacher != "-- เลือก --":
+                        st.session_state.schedule_data[selected_grade][s_day][s_period].append({
+                            "teacher": s_teacher, "subject": get_teacher_subject(s_teacher), "program": s_prog
+                        })
+                        save_data_to_gsheets()
+                        st.rerun()
+
+        # Reset Button (ใช้ได้ทั้ง 2 โหมด)
+        st.write(""); st.write("")
         with st.expander("🗑️ ล้างตารางสอนทั้งหมดของห้องนี้ (Reset)"):
-            st.warning(f"⚠️ คำเตือน: คุณกำลังจะลบข้อมูลตารางสอนทั้งหมดของ **ห้อง {selected_grade}** การกระทำนี้ไม่สามารถย้อนกลับได้")
-            if st.button("ยืนยันการล้างข้อมูลห้องนี้", type="primary"):
+            st.warning(f"⚠️ คำเตือน: ลบข้อมูลห้อง {selected_grade} ทั้งหมด")
+            if st.button("ยืนยันการล้างข้อมูล", type="primary"):
                 for d in DAYS:
                     for p in range(1, 10):
                         st.session_state.schedule_data[selected_grade][d][p] = []
                 save_data_to_gsheets()
-                st.success(f"ล้างข้อมูลห้อง {selected_grade} เรียบร้อยแล้ว")
+                st.success("ล้างข้อมูลเรียบร้อย")
                 st.rerun()
-        
-        # 3. Schedule Table
-        st.subheader(f"👀 ตารางเรียนรวม: {selected_grade}")
-        html_table = render_beautiful_table(selected_grade, st.session_state.schedule_data)
-        st.markdown(html_table, unsafe_allow_html=True)
-        
-        # 4. Split Tables
-        if len(programs_list) > 1:
-            st.markdown("---")
-            st.info(f"📂 ห้องนี้มี **{len(programs_list)} สายการเรียน** ระบบจึงแสดงตารางแยกด้านล่าง")
-            for prog in programs_list:
-                st.write("")
-                st.subheader(f"🔷 ตารางเรียนสำหรับสาย: {prog}")
-                st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
 
-# ==========================================
-# เมนู 3: ข้อมูลของครู
-# ==========================================
 elif menu == "3. 👥 ข้อมูลของครู":
     st.header("จัดการข้อมูลครูผู้สอน")
     current_rooms_list = get_all_rooms()
@@ -574,9 +610,6 @@ elif menu == "3. 👥 ข้อมูลของครู":
     st.subheader("📋 รายชื่อครูในระบบ")
     st.dataframe(st.session_state.teachers_data, use_container_width=True)
 
-# ==========================================
-# เมนู 4: ข้อมูลห้องเรียน
-# ==========================================
 elif menu == "4. 🏫 ข้อมูลห้องเรียน":
     st.header("จัดการข้อมูลห้องเรียน")
     existing_rooms = st.session_state.classrooms_data["ห้องเรียน"].tolist()
@@ -630,9 +663,6 @@ elif menu == "4. 🏫 ข้อมูลห้องเรียน":
     st.subheader("📋 รายชื่อห้องเรียนในระบบ")
     st.dataframe(st.session_state.classrooms_data, use_container_width=True)
 
-# ==========================================
-# เมนู 5: ระบบรายงาน
-# ==========================================
 elif menu == "5. 🖨️ ระบบรายงาน":
     st.header("ระบบออกรายงาน (Print/PDF)")
     tab_teacher, tab_grade = st.tabs(["📄 Report ครูรายคน", "🏫 Report ระดับชั้น"])
@@ -676,32 +706,24 @@ elif menu == "5. 🖨️ ระบบรายงาน":
             else:
                 st.warning("ไม่พบห้องเรียนที่ค้นหา")
 
-# ==========================================
-# เมนู 6: Dashboard
-# ==========================================
 elif menu == "6. 📊 Dashboard สรุปยอด":
     st.header("Dashboard สรุปภาระงานสอน")
-    
     all_rooms_list = get_all_rooms()
     unique_levels = sorted(list(set([r.split('/')[0] for r in all_rooms_list if '/' in r])))
-    
     filter_options = ["ภาพรวมทั้งโรงเรียน"] + unique_levels
     selected_filter = st.selectbox("🔍 เลือกดูข้อมูลเฉพาะระดับชั้น:", filter_options)
     
     teacher_counts = {}
-    
     if selected_filter == "ภาพรวมทั้งโรงเรียน":
         all_teachers = st.session_state.teachers_data["ชื่อ-สกุล"].tolist()
         for t in all_teachers: teacher_counts[t] = 0
     
     total_slots = 0
-    
     schedule_data = st.session_state.schedule_data
     for room in schedule_data:
         if selected_filter != "ภาพรวมทั้งโรงเรียน":
             if not room.startswith(selected_filter):
                 continue
-
         for day in DAYS:
             for period in range(1, 10):
                 slots = schedule_data[room][day][period]
@@ -718,16 +740,12 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
     c2.metric(f"ยอดสอนรวม ({selected_filter})", f"{total_slots} คาบ")
     
     st.markdown("---")
-    
     if teacher_counts:
         df_stats = pd.DataFrame(list(teacher_counts.items()), columns=["ชื่อครู", "จำนวนคาบ/สัปดาห์"])
         df_stats = df_stats.sort_values(by="จำนวนคาบ/สัปดาห์", ascending=False).reset_index(drop=True)
-        
         st.subheader(f"📊 กราฟแสดงจำนวนคาบสอน ({selected_filter})")
         st.bar_chart(df_stats.set_index("ชื่อครู"))
-        
         st.markdown("---")
-        
         st.subheader("📋 ตารางจัดลำดับภาระงาน")
         st.dataframe(
             df_stats, 
@@ -743,4 +761,3 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
         )
     else:
         st.warning("ไม่พบข้อมูลการสอนในระดับชั้นที่เลือก")
-
