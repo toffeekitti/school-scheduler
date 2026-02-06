@@ -481,7 +481,7 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# === MENU 2: 📅 จัดตารางสอน (With Improved Indicators) ===
+# === MENU 2: 📅 จัดตารางสอน (With SLOT LIMITER) ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
     current_rooms_list = get_all_rooms()
@@ -525,7 +525,6 @@ elif menu == "2. 📅 จัดตารางสอน":
                             current_teacher = s['teacher']
                             break
                     
-                    # [VISUAL INDICATOR]
                     if current_teacher:
                         st.markdown(f"**คาบ {p}**: <span style='color:red; font-weight:bold'>❌ มีคนสอน: {current_teacher}</span>", unsafe_allow_html=True)
                     else:
@@ -541,11 +540,11 @@ elif menu == "2. 📅 จัดตารางสอน":
                         idx = options.index(current_teacher)
                         
                     selected = st.selectbox(
-                        f"เลือกครู (คาบ {p})", # Label hidden or simplified
+                        f"เลือกครู (คาบ {p})",
                         options=options,
                         index=idx,
                         key=f"sel_{p}",
-                        label_visibility="collapsed" # Hide repeat label
+                        label_visibility="collapsed"
                     )
                     new_schedule_data[p] = selected
 
@@ -553,27 +552,49 @@ elif menu == "2. 📅 จัดตารางสอน":
             submit_btn = st.form_submit_button("💾 บันทึกตารางวันนี้", type="primary", use_container_width=True)
             
             if submit_btn:
-                updates_map = {}
-                for p, t in new_schedule_data.items():
-                    if t != "-- ว่าง --":
-                        updates_map[p] = t
+                # --- [NEW] VALIDATION: MAX 2 SUBJECTS PER PERIOD ---
+                slot_limit_exceeded = []
                 
-                conflicts = validate_marathon_teaching(updates_map, selected_grade, edit_day)
-                
-                if conflicts:
-                    st.session_state.marathon_confirm_data = {
-                        'grade': selected_grade,
-                        'day': edit_day,
-                        'new_data': new_schedule_data,
-                        'target_prog': target_prog_for_edit,
-                        'conflicts': conflicts
-                    }
-                    st.rerun()
+                # Check logic simulation
+                for p, new_teacher in new_schedule_data.items():
+                    current_slots_in_db = st.session_state.schedule_data[selected_grade][edit_day][p]
+                    # Keep slots from OTHER programs
+                    kept_slots = [s for s in current_slots_in_db if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
+                    
+                    # Calculate new count
+                    new_count = len(kept_slots)
+                    if new_teacher != "-- ว่าง --":
+                        new_count += 1
+                        
+                    if new_count > 2:
+                        slot_limit_exceeded.append(f"คาบ {p}")
+
+                if slot_limit_exceeded:
+                    st.error(f"⛔ **บันทึกไม่ได้!** พบคาบเรียนที่มีวิชาเกิน 2 วิชา (สูงสุด 2 วิชา/ห้อง): **{', '.join(slot_limit_exceeded)}**")
+                    st.warning("คำแนะนำ: กรุณาลบวิชาของสายการเรียนอื่นออกก่อน หรือตรวจสอบว่าท่านกำลังเพิ่มวิชาซ้ำซ้อนหรือไม่")
                 else:
-                    apply_schedule_updates(selected_grade, edit_day, new_schedule_data, target_prog_for_edit)
-                    st.success(f"✅ บันทึกตารางวัน{edit_day} เรียบร้อยแล้ว")
-                    time.sleep(1)
-                    st.rerun()
+                    # Proceed with Marathon Check
+                    updates_map = {}
+                    for p, t in new_schedule_data.items():
+                        if t != "-- ว่าง --":
+                            updates_map[p] = t
+                    
+                    conflicts = validate_marathon_teaching(updates_map, selected_grade, edit_day)
+                    
+                    if conflicts:
+                        st.session_state.marathon_confirm_data = {
+                            'grade': selected_grade,
+                            'day': edit_day,
+                            'new_data': new_schedule_data,
+                            'target_prog': target_prog_for_edit,
+                            'conflicts': conflicts
+                        }
+                        st.rerun()
+                    else:
+                        apply_schedule_updates(selected_grade, edit_day, new_schedule_data, target_prog_for_edit)
+                        st.success(f"✅ บันทึกตารางวัน{edit_day} เรียบร้อยแล้ว")
+                        time.sleep(1)
+                        st.rerun()
 
         # ส่วนยืนยันมาราธอน
         if st.session_state.marathon_confirm_data:
