@@ -141,10 +141,9 @@ if 'data_initialized' not in st.session_state:
         
     st.session_state.data_initialized = True
 
-if 'confirm_needed' not in st.session_state:
-    st.session_state.confirm_needed = False
-if 'pending_payload' not in st.session_state:
-    st.session_state.pending_payload = {}
+# ตัวแปรสำหรับระบบยืนยันมาราธอน
+if 'marathon_confirm_data' not in st.session_state:
+    st.session_state.marathon_confirm_data = None
 
 # --- 4. Helper Functions ---
 def get_all_rooms():
@@ -179,7 +178,6 @@ def get_available_teachers(current_room, day, period):
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
     
-    # 1. เช็คว่าใครไม่ว่าง (ติดสอนห้องอื่น)
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
@@ -188,7 +186,6 @@ def get_available_teachers(current_room, day, period):
             for s in slots:
                 busy_teachers.append(s['teacher'])
     
-    # 2. กรองเฉพาะคนที่ว่าง และ ได้รับมอบหมายให้สอนห้องนี้
     available = []
     for t in all_teachers:
         if t not in busy_teachers:
@@ -225,8 +222,22 @@ def validate_marathon_teaching(schedule_updates, current_room, day):
             else:
                 consecutive = 1
         if max_consecutive > 2:
-            conflicts.append(f"❌ ครู {teacher} สอนติดกัน {max_consecutive} คาบ (คาบ {teaching_periods})")
+            conflicts.append(f"⚠️ ครู {teacher} สอนติดกัน {max_consecutive} คาบ (คาบ {teaching_periods})")
     return conflicts
+
+def apply_schedule_updates(grade, day, new_data, target_prog):
+    """ฟังก์ชันสำหรับบันทึกข้อมูลจริง"""
+    for p, new_teacher in new_data.items():
+        current_slots = st.session_state.schedule_data[grade][day][p]
+        kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog]
+        
+        if new_teacher != "-- ว่าง --":
+            subj = get_teacher_subject(new_teacher)
+            new_slot = {"teacher": new_teacher, "subject": subj, "program": target_prog}
+            kept_slots.append(new_slot)
+        
+        st.session_state.schedule_data[grade][day][p] = kept_slots
+    save_data_to_gsheets()
 
 def natural_sort_key(s):
     try:
@@ -437,7 +448,7 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# === MENU 2: [REORDERED & FIXED LAYOUT] ===
+# === MENU 2 ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
     current_rooms_list = get_all_rooms()
@@ -451,7 +462,7 @@ elif menu == "2. 📅 จัดตารางสอน":
         st.caption(f"🎓 สายการเรียน: **{program_str}**")
         st.markdown("---")
 
-        # --- 1. บันทึกตารางสอน (Smart Daily Editor) ย้ายขึ้นบน ---
+        # --- 1. บันทึกตารางสอน ---
         st.subheader("📝 บันทึกตารางสอน")
         
         c_day, c_prog = st.columns(2)
@@ -510,29 +521,42 @@ elif menu == "2. 📅 จัดตารางสอน":
                 conflicts = validate_marathon_teaching(updates_map, selected_grade, edit_day)
                 
                 if conflicts:
-                    st.error("⛔ **บันทึกไม่ได้! พบการสอนมาราธอน (ติดกันเกิน 2 คาบ):**")
-                    for c in conflicts:
-                        st.write(c)
+                    st.session_state.marathon_confirm_data = {
+                        'grade': selected_grade,
+                        'day': edit_day,
+                        'new_data': new_schedule_data,
+                        'target_prog': target_prog_for_edit,
+                        'conflicts': conflicts
+                    }
+                    st.rerun()
                 else:
-                    for p, new_teacher in new_schedule_data.items():
-                        current_slots = st.session_state.schedule_data[selected_grade][edit_day][p]
-                        kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
-                        
-                        if new_teacher != "-- ว่าง --":
-                            subj = get_teacher_subject(new_teacher)
-                            new_slot = {"teacher": new_teacher, "subject": subj, "program": target_prog_for_edit}
-                            kept_slots.append(new_slot)
-                        
-                        st.session_state.schedule_data[selected_grade][edit_day][p] = kept_slots
-                    
-                    save_data_to_gsheets()
+                    apply_schedule_updates(selected_grade, edit_day, new_schedule_data, target_prog_for_edit)
                     st.success(f"✅ บันทึกตารางวัน{edit_day} เรียบร้อยแล้ว")
                     time.sleep(1)
                     st.rerun()
 
+        # ส่วนยืนยันมาราธอน (อยู่นอก Form)
+        if st.session_state.marathon_confirm_data:
+            data = st.session_state.marathon_confirm_data
+            st.warning("⚠️ **แจ้งเตือน: พบการสอนมาราธอน**")
+            for c in data['conflicts']:
+                st.error(c)
+            st.info("คุณต้องการยืนยันการบันทึกหรือไม่? (กด 'ยืนยัน' เพื่อบันทึกแม้จะมีข้อแจ้งเตือน)")
+            
+            col_conf1, col_conf2 = st.columns([0.2, 0.8])
+            if col_conf1.button("✅ ยืนยันการบันทึก", type="primary"):
+                apply_schedule_updates(data['grade'], data['day'], data['new_data'], data['target_prog'])
+                st.session_state.marathon_confirm_data = None
+                st.success("บันทึกข้อมูลเรียบร้อย (แบบมาราธอน)")
+                time.sleep(1)
+                st.rerun()
+            if col_conf2.button("❌ ยกเลิก"):
+                st.session_state.marathon_confirm_data = None
+                st.rerun()
+
         st.markdown("---")
 
-        # --- 2. ส่วนตารางเรียน (View) พร้อมปุ่ม Reset ด้านขวาบน ---
+        # --- 2. ส่วนตารางเรียน (View) ---
         c_head, c_reset = st.columns([0.8, 0.2])
         
         with c_head:
