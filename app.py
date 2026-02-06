@@ -175,10 +175,33 @@ def is_teacher_assigned_to_room(teacher_name, room_name):
     assigned_list = [r.strip() for r in assigned_str.split(",")]
     return room_name in assigned_list
 
+# [FIX] นำฟังก์ชันนี้กลับมา (เพื่อความปลอดภัยและใช้คำนวณเบื้องหลัง)
+def get_available_teachers(current_room, day, period):
+    all_teachers_df = st.session_state.teachers_data
+    if all_teachers_df is None or all_teachers_df.empty: return [], []
+    all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
+    busy_teachers = []
+    all_rooms = get_all_rooms()
+    for r in all_rooms:
+        if r == current_room: continue
+        if r in st.session_state.schedule_data:
+            slots = st.session_state.schedule_data[r][day][period]
+            for s in slots:
+                busy_teachers.append(s['teacher'])
+    available = []
+    for t in all_teachers:
+        if t not in busy_teachers:
+            if is_teacher_assigned_to_room(t, current_room):
+                available.append(t)
+    return available, busy_teachers
+
+# [FEATURE] ฟังก์ชันสำหรับแสดงสถานะใน Dropdown
 def get_teachers_with_status_options(current_room, day, period):
     all_teachers_df = st.session_state.teachers_data
     if all_teachers_df is None or all_teachers_df.empty: return []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
+    
+    # Map ว่าใครสอนห้องไหนอยู่
     busy_map = {}
     all_rooms = get_all_rooms()
     for r in all_rooms:
@@ -187,6 +210,7 @@ def get_teachers_with_status_options(current_room, day, period):
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots:
                 busy_map[s['teacher']] = r
+    
     options = []
     for t in all_teachers:
         if is_teacher_assigned_to_room(t, current_room):
@@ -210,7 +234,7 @@ def validate_schedule_rules(schedule_updates, current_room, day, target_prog):
     
     all_rooms = get_all_rooms()
     for teacher in involved_teachers:
-        # Check 1: Double Booking
+        # 1. Double Booking
         for p, t_opt in schedule_updates.items():
             if clean_teacher_name(t_opt) == teacher:
                 for r in all_rooms:
@@ -220,7 +244,7 @@ def validate_schedule_rules(schedule_updates, current_room, day, target_prog):
                         if s['teacher'] == teacher:
                             conflicts.append(f"⛔ **สอนซ้อน:** ครู {teacher} สอนที่ห้อง {r} ในคาบ {p} อยู่แล้ว")
 
-        # Check 2: Marathon
+        # 2. Marathon
         teaching_periods = []
         for r in all_rooms:
             for p in range(1, 10):
@@ -259,25 +283,19 @@ def apply_schedule_updates(grade, day, new_data, target_prog, auto_remove_confli
     for p, t_opt in new_data.items():
         if t_opt == "-- ล็อค --": continue
         
-        # 1. Prepare new teacher name
         real_name = None
         if t_opt != "-- ว่าง --":
             real_name = clean_teacher_name(t_opt)
             
-        # 2. [AUTO-REMOVE] If enabled, remove this teacher from ANY other room in this period
+        # Remove from old room if requested
         if auto_remove_conflict and real_name:
             for r in all_rooms:
-                if r == grade: continue # Skip current room
-                # Check slots in other room
+                if r == grade: continue
                 r_slots = st.session_state.schedule_data[r][day][p]
-                # Filter out the conflicting teacher
                 new_r_slots = [s for s in r_slots if s['teacher'] != real_name]
-                
-                # If changed, update and notify (optional log)
                 if len(new_r_slots) != len(r_slots):
                     st.session_state.schedule_data[r][day][p] = new_r_slots
         
-        # 3. Apply to Current Room
         current_slots = st.session_state.schedule_data[grade][day][p]
         kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog]
         
@@ -598,7 +616,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                         st.selectbox("ล็อค", ["-- ใช้ตารางเดิม --"], disabled=True, key=f"sel_{p}_locked", label_visibility="collapsed")
                         new_schedule_data[p] = "-- ล็อค --"
                     else:
-                        # 2. NORMAL EDIT
+                        # 2. NORMAL EDIT with Status
                         current_teacher = None
                         for s in current_slots_all:
                             if s.get('program', 'รวมทุกสาย') == target_prog_for_edit:
@@ -610,12 +628,12 @@ elif menu == "2. 📅 จัดตารางสอน":
                         else:
                             st.markdown(f"**คาบ {p}**: <span style='color:green; font-weight:bold'>✅ ว่าง</span>", unsafe_allow_html=True)
 
-                        avail_teachers, busy_teachers = get_available_teachers(selected_grade, edit_day, p)
+                        # [IMPORTANT] Use new helper function for status options
                         options = ["-- ว่าง --"] + get_teachers_with_status_options(selected_grade, edit_day, p)
                         
                         idx = 0
                         if current_teacher:
-                            # Match current teacher name (even with status text)
+                            # Try to match current teacher name in options (including status text)
                             for i, opt in enumerate(options):
                                 if clean_teacher_name(opt) == current_teacher:
                                     idx = i
@@ -676,7 +694,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                 st.error(c)
             
             st.info("ต้องการดำเนินการต่อหรือไม่?")
-            # [NEW] Checkbox for auto-remove
+            # Checkbox to remove from old room
             auto_remove = st.checkbox("☑️ ลบรายชื่อออกจากห้องเดิมทันที (ย้ายห้องสอน)", value=True)
             
             col_conf1, col_conf2 = st.columns([0.2, 0.8])
@@ -686,7 +704,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                     data['day'], 
                     data['new_data'], 
                     data['target_prog'], 
-                    auto_remove_conflict=auto_remove # Pass checkbox value
+                    auto_remove_conflict=auto_remove
                 )
                 st.session_state.marathon_confirm_data = None
                 st.success("บันทึกข้อมูลเรียบร้อย")
