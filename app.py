@@ -176,7 +176,6 @@ def get_available_teachers(current_room, day, period):
     if all_teachers_df is None or all_teachers_df.empty: return [], []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
-    
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
@@ -184,13 +183,11 @@ def get_available_teachers(current_room, day, period):
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots:
                 busy_teachers.append(s['teacher'])
-    
     available = []
     for t in all_teachers:
         if t not in busy_teachers:
             if is_teacher_assigned_to_room(t, current_room):
                 available.append(t)
-                
     return available, busy_teachers
 
 def validate_marathon_teaching(schedule_updates, current_room, day):
@@ -372,7 +369,6 @@ def generate_teacher_report_html():
     html += "</body></html>"
     return html
 
-# --- [UPDATED] Report Logic: Master + Separate Tables ---
 def generate_grade_report_html(target_level):
     all_rooms = get_all_rooms()
     target_rooms = [r for r in all_rooms if target_level in r]
@@ -399,7 +395,6 @@ def generate_grade_report_html(target_level):
         programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
         if not programs_list: programs_list = ["รวมทุกสาย"]
         
-        # --- 1. MASTER TABLE (ตารางรวม) ---
         html += f"""<div class="section"><h3>ห้องเรียน: {room} (ตารางรวมทุกสาย)</h3>
             <table><thead><tr><th class="day-col">วัน</th>"""
         for p in range(1, 10):
@@ -426,7 +421,6 @@ def generate_grade_report_html(target_level):
             html += "</tr>"
         html += "</tbody></table></div>"
 
-        # --- 2. SEPARATED TABLES (แยกสาย - ถ้ามีมากกว่า 1 สาย) ---
         if len(programs_list) > 1:
             html += "<h4 style='margin-top:20px; color:#555;'>👇 ตารางแยกตามสายการเรียน:</h4>"
             for prog in programs_list:
@@ -754,7 +748,6 @@ elif menu == "5. 🖨️ ระบบรายงาน":
         with col_g2:
             st.write(""); st.write("")
             if sel_level:
-                # [UPDATED] ใช้ฟังก์ชันใหม่ที่สร้างตารางแยกสาย
                 html_report_grade = generate_grade_report_html(sel_level)
                 st.download_button(f"📥 ดาวน์โหลด Report แยกสายการเรียน ({sel_level})", data=html_report_grade, file_name=f"grade_{sel_level}_report.html", mime="text/html", type="primary")
         
@@ -768,10 +761,17 @@ elif menu == "5. 🖨️ ระบบรายงาน":
                 programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
                 if not programs_list: programs_list = ["รวมทุกสาย"]
                 
-                st.markdown(f"**ห้อง: {example_room}**")
-                for prog in programs_list:
-                    st.write(f"🔹 **สาย: {prog}**")
-                    st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
+                st.markdown(f"### 🏠 ห้อง: {example_room}")
+                
+                # --- [NEW] SHOW MASTER TABLE ---
+                st.write("#### 🟢 ตารางเรียนรวม (Master)")
+                st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data), unsafe_allow_html=True)
+                
+                if len(programs_list) > 1:
+                    st.write("#### 🟡 ตารางแยกตามสายการเรียน")
+                    for prog in programs_list:
+                        st.write(f"**🔹 สาย: {prog}**")
+                        st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
             else:
                 st.warning("ไม่พบห้องเรียนที่ค้นหา")
 
