@@ -179,6 +179,7 @@ def get_available_teachers(current_room, day, period):
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
     
+    # 1. เช็คว่าใครไม่ว่าง (ติดสอนห้องอื่น)
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
@@ -187,6 +188,7 @@ def get_available_teachers(current_room, day, period):
             for s in slots:
                 busy_teachers.append(s['teacher'])
     
+    # 2. กรองเฉพาะคนที่ว่าง และ ได้รับมอบหมายให้สอนห้องนี้
     available = []
     for t in all_teachers:
         if t not in busy_teachers:
@@ -531,17 +533,14 @@ elif menu == "2. 📅 จัดตารางสอน":
         st.markdown("---")
 
         # --- 2. ส่วนตารางเรียน (View) พร้อมปุ่ม Reset ด้านขวาบน ---
-        
-        # จัด Layout: Header ด้านซ้าย | ปุ่ม Reset ด้านขวา
         c_head, c_reset = st.columns([0.8, 0.2])
         
         with c_head:
             st.subheader(f"👀 ตารางเรียนปัจจุบัน: {selected_grade}")
             
         with c_reset:
-            # ใช้ Expander เพื่อซ่อนปุ่มยืนยันไว้ข้างใน (Safety)
-            with st.expander("🗑️ ล้างห้องนี้", expanded=False):
-                if st.button("ยืนยันลบ", type="primary", key="btn_reset_confirm"):
+            with st.expander("🗑️ ล้างข้อมูลทั้งหมด", expanded=False):
+                if st.button("ยืนยัน", type="primary", key="btn_reset_confirm"):
                     for d in DAYS:
                         for p in range(1, 10):
                             st.session_state.schedule_data[selected_grade][d][p] = []
@@ -554,11 +553,12 @@ elif menu == "2. 📅 จัดตารางสอน":
         st.markdown(html_table, unsafe_allow_html=True)
         
         if len(programs_list) > 1:
-            with st.expander("ดูตารางแยกตามสายการเรียน"):
-                for prog in programs_list:
-                    st.write("")
-                    st.subheader(f"🔷 ตารางเรียนสำหรับสาย: {prog}")
-                    st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
+            st.markdown("---")
+            st.write("### 📂 ตารางแยกตามสายการเรียน")
+            for prog in programs_list:
+                st.write("")
+                st.subheader(f"🔷 สาย: {prog}")
+                st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
 
 elif menu == "3. 👥 ข้อมูลของครู":
     st.header("จัดการข้อมูลครูผู้สอน")
