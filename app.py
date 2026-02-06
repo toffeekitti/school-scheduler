@@ -176,6 +176,7 @@ def get_available_teachers(current_room, day, period):
     if all_teachers_df is None or all_teachers_df.empty: return [], []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
+    
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
@@ -183,11 +184,13 @@ def get_available_teachers(current_room, day, period):
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots:
                 busy_teachers.append(s['teacher'])
+    
     available = []
     for t in all_teachers:
         if t not in busy_teachers:
             if is_teacher_assigned_to_room(t, current_room):
                 available.append(t)
+                
     return available, busy_teachers
 
 def validate_marathon_teaching(schedule_updates, current_room, day):
@@ -369,7 +372,7 @@ def generate_teacher_report_html():
     html += "</body></html>"
     return html
 
-# --- [UPDATED] Report Logic: Separate Tables per Program ---
+# --- [UPDATED] Report Logic: Master + Separate Tables ---
 def generate_grade_report_html(target_level):
     all_rooms = get_all_rooms()
     target_rooms = [r for r in all_rooms if target_level in r]
@@ -396,35 +399,65 @@ def generate_grade_report_html(target_level):
         programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
         if not programs_list: programs_list = ["รวมทุกสาย"]
         
-        for prog in programs_list:
-            html += f"""<div class="section"><h3>ห้องเรียน: {room} <span style="font-size:0.8em; color:#555;">(สายการเรียน: {prog})</span></h3>
-                <table><thead><tr><th class="day-col">วัน</th>"""
+        # --- 1. MASTER TABLE (ตารางรวม) ---
+        html += f"""<div class="section"><h3>ห้องเรียน: {room} (ตารางรวมทุกสาย)</h3>
+            <table><thead><tr><th class="day-col">วัน</th>"""
+        for p in range(1, 10):
+            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
+            if p in BREAKS: html += f"<th class='break-col'></th>"
+        html += "</tr></thead><tbody>"
+        for idx, d in enumerate(DAYS):
+            html += f"<tr><td class='day-col'>{d}</td>"
             for p in range(1, 10):
-                html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
-                if p in BREAKS: html += f"<th class='break-col'></th>"
-            html += "</tr></thead><tbody>"
-            for idx, d in enumerate(DAYS):
-                html += f"<tr><td class='day-col'>{d}</td>"
+                slots = st.session_state.schedule_data[room][d][p]
+                cell_items = []
+                if slots:
+                    for s in slots:
+                        prog_text = s.get('program', 'รวม')
+                        prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
+                        cell_items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
+                
+                if not cell_items: cell = "-"
+                else: cell = "<hr style='margin:2px'>".join(cell_items)
+                
+                html += f"<td>{cell}</td>"
+                if p in BREAKS:
+                    if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+            html += "</tr>"
+        html += "</tbody></table></div>"
+
+        # --- 2. SEPARATED TABLES (แยกสาย - ถ้ามีมากกว่า 1 สาย) ---
+        if len(programs_list) > 1:
+            html += "<h4 style='margin-top:20px; color:#555;'>👇 ตารางแยกตามสายการเรียน:</h4>"
+            for prog in programs_list:
+                html += f"""<div class="section"><h4>- ห้อง {room} (สาย {prog})</h4>
+                    <table><thead><tr><th class="day-col">วัน</th>"""
                 for p in range(1, 10):
-                    slots = st.session_state.schedule_data[room][d][p]
-                    # Filter Logic
-                    cell_items = []
-                    if slots:
-                        for s in slots:
-                            # Show if exact match OR 'รวมทุกสาย'
-                            if s.get('program', 'รวมทุกสาย') == prog or s.get('program', 'รวมทุกสาย') == 'รวมทุกสาย':
-                                prog_text = s.get('program', 'รวม')
-                                prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
-                                cell_items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
-                    
-                    if not cell_items: cell = "-"
-                    else: cell = "<hr style='margin:2px'>".join(cell_items)
-                    
-                    html += f"<td>{cell}</td>"
-                    if p in BREAKS:
-                        if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
-                html += "</tr>"
-            html += "</tbody></table></div><div class='page-break'></div>"
+                    html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
+                    if p in BREAKS: html += f"<th class='break-col'></th>"
+                html += "</tr></thead><tbody>"
+                for idx, d in enumerate(DAYS):
+                    html += f"<tr><td class='day-col'>{d}</td>"
+                    for p in range(1, 10):
+                        slots = st.session_state.schedule_data[room][d][p]
+                        cell_items = []
+                        if slots:
+                            for s in slots:
+                                if s.get('program', 'รวมทุกสาย') == prog or s.get('program', 'รวมทุกสาย') == 'รวมทุกสาย':
+                                    prog_text = s.get('program', 'รวม')
+                                    prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
+                                    cell_items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
+                        
+                        if not cell_items: cell = "-"
+                        else: cell = "<hr style='margin:2px'>".join(cell_items)
+                        
+                        html += f"<td>{cell}</td>"
+                        if p in BREAKS:
+                            if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+                    html += "</tr>"
+                html += "</tbody></table></div>"
+        
+        html += "<div class='page-break'></div>"
             
     html += "</body></html>"
     return html
