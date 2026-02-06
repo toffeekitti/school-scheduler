@@ -171,7 +171,7 @@ def is_teacher_assigned_to_room(teacher_name, room_name):
     
     assigned_str = str(row.iloc[0]["ระดับชั้นที่สอน"])
     if assigned_str == "-" or assigned_str == "nan" or not assigned_str.strip():
-        # ถ้าไม่ระบุ ถือว่าสอนได้หมด (หรือจะแก้เป็น False ถ้าต้องการให้ระบุเท่านั้น)
+        # ถ้าไม่ระบุ ถือว่าสอนได้หมด
         return True 
     
     assigned_list = [r.strip() for r in assigned_str.split(",")]
@@ -207,7 +207,6 @@ def validate_marathon_teaching(schedule_updates, current_room, day):
     schedule_updates: {period: teacher_name}
     """
     conflicts = []
-    # ดึงรายชื่อครูที่ถูกเลือกทั้งหมดในการแก้ไขนี้
     involved_teachers = set(schedule_updates.values())
     involved_teachers.discard(None)
     involved_teachers.discard("-- ว่าง --")
@@ -215,12 +214,11 @@ def validate_marathon_teaching(schedule_updates, current_room, day):
     all_rooms = get_all_rooms()
     
     for teacher in involved_teachers:
-        # 1. รวบรวมคาบที่สอนทั้งหมดในวันนี้ (จากห้องอื่น + ห้องนี้ที่กำลังแก้)
         teaching_periods = []
         
         # คาบจากห้องอื่น (ที่บันทึกไปแล้ว)
         for r in all_rooms:
-            if r == current_room: continue # ข้ามห้องปัจจุบัน (เพราะเรากำลังจะแก้)
+            if r == current_room: continue 
             for p in range(1, 10):
                 slots = st.session_state.schedule_data[r][day][p]
                 for s in slots:
@@ -232,7 +230,7 @@ def validate_marathon_teaching(schedule_updates, current_room, day):
             if selected_t == teacher:
                 teaching_periods.append(p)
                 
-        # 2. ตรวจสอบการติดกัน (Sort & Check)
+        # ตรวจสอบการติดกัน
         teaching_periods = sorted(list(set(teaching_periods)))
         consecutive = 1
         max_consecutive = 1
@@ -458,7 +456,7 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# === MENU 2: Smart Daily Editor ===
+# === MENU 2: [REORDERED] จัดตารางสอน ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
     current_rooms_list = get_all_rooms()
@@ -472,23 +470,23 @@ elif menu == "2. 📅 จัดตารางสอน":
         st.caption(f"🎓 สายการเรียน: **{program_str}**")
         st.markdown("---")
 
-        # --- View Mode ---
-        st.subheader(f"👀 ตารางเรียนปัจจุบัน: {selected_grade}")
-        html_table = render_beautiful_table(selected_grade, st.session_state.schedule_data)
-        st.markdown(html_table, unsafe_allow_html=True)
+        # --- 1. ส่วนล้างข้อมูล (Reset) ---
+        with st.expander("🗑️ ล้างตารางสอนทั้งหมดของห้องนี้ (Reset)"):
+            st.warning(f"⚠️ คำเตือน: คุณกำลังจะลบข้อมูลตารางสอนทั้งหมดของ **ห้อง {selected_grade}** การกระทำนี้ไม่สามารถย้อนกลับได้")
+            if st.button("ยืนยันการล้างข้อมูลห้องนี้", type="primary"):
+                for d in DAYS:
+                    for p in range(1, 10):
+                        st.session_state.schedule_data[selected_grade][d][p] = []
+                save_data_to_gsheets()
+                st.success(f"ล้างข้อมูลห้อง {selected_grade} เรียบร้อยแล้ว")
+                st.rerun()
         
-        if len(programs_list) > 1:
-            with st.expander("ดูตารางแยกตามสายการเรียน"):
-                for prog in programs_list:
-                    st.write("")
-                    st.subheader(f"🔷 ตารางเรียนสำหรับสาย: {prog}")
-                    st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
-
         st.markdown("---")
-        st.subheader("✏️ โหมดแก้ไขด่วน (Smart Daily Editor)")
-        st.info("💡 **ระบบกรองอัตโนมัติ:** แสดงเฉพาะครูที่ **ว่าง** และ **สอนห้องนี้** เท่านั้น")
 
-        # 1. Select Context
+        # --- 2. ส่วนบันทึกตารางสอน (Smart Daily Editor) ---
+        st.subheader("📝 บันทึกตารางสอน")
+        
+        # Select Context
         c_day, c_prog = st.columns(2)
         with c_day:
             edit_day = st.selectbox("1. เลือกวันที่จะแก้ไข:", DAYS)
@@ -499,11 +497,12 @@ elif menu == "2. 📅 จัดตารางสอน":
             else:
                 st.selectbox("2. สายการเรียน:", ["รวมทุกสาย"], disabled=True)
 
-        # 2. Form Container
+        # Form Container
         with st.form(key="daily_editor_form"):
-            st.markdown(f"#### 📅 กำลังแก้ไข: วัน{edit_day} ({target_prog_for_edit})")
+            st.info(f"💡 ระบบแสดงเฉพาะครูที่ **ว่าง** และ **สอนห้อง {selected_grade}** เท่านั้น")
+            st.markdown(f"#### 📅 วัน{edit_day} ({target_prog_for_edit})")
             
-            # Prepare Data & Inputs
+            # Prepare Data
             new_schedule_data = {} 
             
             # Grid Layout (3 columns x 3 rows)
@@ -520,15 +519,15 @@ elif menu == "2. 📅 จัดตารางสอน":
                             current_teacher = s['teacher']
                             break
                     
-                    # [UPDATED] Get Available Teachers (Filtered by room and schedule)
+                    # Get Available
                     avail_teachers, busy_teachers = get_available_teachers(selected_grade, edit_day, p)
                     
-                    # Merge current teacher into options (so we can keep them selected)
+                    # Merge current teacher
                     options = ["-- ว่าง --"] + avail_teachers
                     if current_teacher and current_teacher not in options:
                         options.append(current_teacher) 
                     
-                    # Display Selectbox
+                    # Display
                     idx = 0
                     if current_teacher in options:
                         idx = options.index(current_teacher)
@@ -541,19 +540,17 @@ elif menu == "2. 📅 จัดตารางสอน":
                     )
                     new_schedule_data[p] = selected
 
-            # Submit Button
+            # Submit
             st.markdown("---")
             submit_btn = st.form_submit_button("💾 บันทึกตารางวันนี้", type="primary", use_container_width=True)
             
             if submit_btn:
-                # [VALIDATION] Check for Marathon Teaching (>2 slots consecutive)
-                # 1. Prepare map of final selections {period: teacher}
+                # Validation
                 updates_map = {}
                 for p, t in new_schedule_data.items():
                     if t != "-- ว่าง --":
                         updates_map[p] = t
                 
-                # 2. Run Validation
                 conflicts = validate_marathon_teaching(updates_map, selected_grade, edit_day)
                 
                 if conflicts:
@@ -561,7 +558,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                     for c in conflicts:
                         st.write(c)
                 else:
-                    # Update Logic
+                    # Update
                     for p, new_teacher in new_schedule_data.items():
                         current_slots = st.session_state.schedule_data[selected_grade][edit_day][p]
                         kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
@@ -578,17 +575,19 @@ elif menu == "2. 📅 จัดตารางสอน":
                     time.sleep(1)
                     st.rerun()
 
-        # Reset Button
-        st.write(""); st.write("")
-        with st.expander("🗑️ ล้างตารางสอนทั้งหมดของห้องนี้ (Reset)"):
-            st.warning(f"⚠️ คำเตือน: ลบข้อมูลห้อง {selected_grade} ทั้งหมด")
-            if st.button("ยืนยันการล้างข้อมูล", type="primary"):
-                for d in DAYS:
-                    for p in range(1, 10):
-                        st.session_state.schedule_data[selected_grade][d][p] = []
-                save_data_to_gsheets()
-                st.success("ล้างข้อมูลเรียบร้อย")
-                st.rerun()
+        st.markdown("---")
+
+        # --- 3. ส่วนตารางเรียน (View) ---
+        st.subheader(f"👀 ตารางเรียนปัจจุบัน: {selected_grade}")
+        html_table = render_beautiful_table(selected_grade, st.session_state.schedule_data)
+        st.markdown(html_table, unsafe_allow_html=True)
+        
+        if len(programs_list) > 1:
+            with st.expander("ดูตารางแยกตามสายการเรียน"):
+                for prog in programs_list:
+                    st.write("")
+                    st.subheader(f"🔷 ตารางเรียนสำหรับสาย: {prog}")
+                    st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
 
 elif menu == "3. 👥 ข้อมูลของครู":
     st.header("จัดการข้อมูลครูผู้สอน")
