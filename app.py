@@ -369,12 +369,9 @@ def generate_teacher_report_html():
     html += "</body></html>"
     return html
 
-def generate_grade_report_html(target_level):
-    all_rooms = get_all_rooms()
-    target_rooms = [r for r in all_rooms if target_level in r]
-    target_rooms.sort(key=natural_sort_key)
-    
-    html = f"""<html><head><title>ตารางเรียน {target_level}</title><style>
+# --- [UPDATED] Generator accepts specific room list now ---
+def generate_grade_report_html(target_rooms_list, title_text):
+    html = f"""<html><head><title>ตารางเรียน {title_text}</title><style>
             body {{ font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }}
             h1 {{ text-align: center; font-size: 28px; }}
             h3 {{ font-size: 24px; margin-bottom: 5px; }}
@@ -388,13 +385,14 @@ def generate_grade_report_html(target_level):
             .subject {{ font-weight: bold; font-size: 1.1em; }}
             .teacher {{ font-size: 0.9em; }}
             .prog-badge {{ font-size: 0.8em; background-color: #ddd; padding: 2px 4px; border-radius: 4px; margin-left: 4px; }}
-        </style></head><body><h1>ตารางเรียนระดับชั้น {target_level}</h1><p style='text-align:center'>ข้อมูล ณ {datetime.now().strftime("%d/%m/%Y %H:%M")}</p><hr>"""
+        </style></head><body><h1>ตารางเรียน {title_text}</h1><p style='text-align:center'>ข้อมูล ณ {datetime.now().strftime("%d/%m/%Y %H:%M")}</p><hr>"""
     
-    for room in target_rooms:
+    for room in target_rooms_list:
         program_str = get_room_program(room)
         programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
         if not programs_list: programs_list = ["รวมทุกสาย"]
         
+        # 1. Master Table
         html += f"""<div class="section"><h3>ห้องเรียน: {room} (ตารางรวมทุกสาย)</h3>
             <table><thead><tr><th class="day-col">วัน</th>"""
         for p in range(1, 10):
@@ -421,6 +419,7 @@ def generate_grade_report_html(target_level):
             html += "</tr>"
         html += "</tbody></table></div>"
 
+        # 2. Separated Tables
         if len(programs_list) > 1:
             html += "<h4 style='margin-top:20px; color:#555;'>👇 ตารางแยกตามสายการเรียน:</h4>"
             for prog in programs_list:
@@ -742,28 +741,55 @@ elif menu == "5. 🖨️ ระบบรายงาน":
             st.markdown(render_beautiful_table("Report", temp_data), unsafe_allow_html=True)
 
     with tab_grade:
-        st.subheader("รายงานตารางเรียนรายระดับชั้น (แยกตามสายการเรียน)")
-        col_g1, col_g2 = st.columns([1, 2])
-        with col_g1: sel_level = st.text_input("ค้นหาระดับชั้น (เช่น ป.4)", value="ป.4")
-        with col_g2:
-            st.write(""); st.write("")
-            if sel_level:
-                html_report_grade = generate_grade_report_html(sel_level)
-                st.download_button(f"📥 ดาวน์โหลด Report แยกสายการเรียน ({sel_level})", data=html_report_grade, file_name=f"grade_{sel_level}_report.html", mime="text/html", type="primary")
+        st.subheader("รายงานตารางเรียนรายระดับชั้น")
         
-        if sel_level:
+        # --- [NEW] SMART DROPDOWN ---
+        all_rooms = get_all_rooms()
+        all_rooms.sort(key=natural_sort_key)
+        
+        # 1. หา Grade Level ทั้งหมด
+        unique_levels = sorted(list(set([r.split('/')[0] for r in all_rooms if '/' in r])), key=natural_sort_key)
+        
+        # 2. สร้างตัวเลือก (Options)
+        report_options = ["-- กรุณาเลือก --"]
+        for l in unique_levels:
+            report_options.append(f"📦 ระดับชั้น {l} (ทั้งหมด)") # เหมาทั้งชั้น
+            # Add rooms
+            rooms_in_level = [r for r in all_rooms if r.startswith(l)]
+            report_options.extend(rooms_in_level) # เพิ่มรายชื่อห้องต่อท้าย
+            
+        selection = st.selectbox("เลือกห้องหรือระดับชั้นที่ต้องการพิมพ์:", report_options)
+        
+        target_rooms_for_report = []
+        report_title = ""
+        
+        if selection != "-- กรุณาเลือก --":
+            if "(ทั้งหมด)" in selection:
+                # กรณีเลือกเหมาชั้น
+                level_key = selection.split(" ")[2] # ดึงคำว่า "ป.4" ออกมา
+                target_rooms_for_report = [r for r in all_rooms if r.startswith(level_key)]
+                report_title = f"ระดับชั้น {level_key}"
+                file_name_dl = f"grade_{level_key}_all_report.html"
+            else:
+                # กรณีเลือกห้องเดียว
+                target_rooms_for_report = [selection]
+                report_title = f"ห้อง {selection}"
+                file_name_dl = f"room_{selection}_report.html"
+            
+            st.write(""); st.write("")
+            html_report_grade = generate_grade_report_html(target_rooms_for_report, report_title)
+            st.download_button(f"📥 ดาวน์โหลด Report ({report_title})", data=html_report_grade, file_name=file_name_dl, mime="text/html", type="primary")
+        
+        if target_rooms_for_report:
             st.markdown("---")
-            st.write(f"**ตัวอย่างห้องที่พบ:**")
-            found_rooms = [r for r in get_all_rooms() if sel_level in r]
-            if found_rooms:
-                example_room = found_rooms[0]
+            st.write(f"**📄 ตัวอย่างเอกสาร ({len(target_rooms_for_report)} ห้อง):**")
+            
+            for example_room in target_rooms_for_report:
                 program_str = get_room_program(example_room)
                 programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
                 if not programs_list: programs_list = ["รวมทุกสาย"]
                 
                 st.markdown(f"### 🏠 ห้อง: {example_room}")
-                
-                # --- [NEW] SHOW MASTER TABLE ---
                 st.write("#### 🟢 ตารางเรียนรวม (Master)")
                 st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data), unsafe_allow_html=True)
                 
@@ -772,8 +798,7 @@ elif menu == "5. 🖨️ ระบบรายงาน":
                     for prog in programs_list:
                         st.write(f"**🔹 สาย: {prog}**")
                         st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
-            else:
-                st.warning("ไม่พบห้องเรียนที่ค้นหา")
+                st.markdown("---")
 
 elif menu == "6. 📊 Dashboard สรุปยอด":
     st.header("Dashboard สรุปภาระงานสอน")
