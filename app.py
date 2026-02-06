@@ -4,6 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
+import re # เพิ่ม Module นี้สำหรับจัดการตัดคำ (ชื่อครู)
 
 # --- 1. ตั้งค่าพื้นฐาน ---
 st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Phi", layout="wide")
@@ -158,8 +159,11 @@ def get_room_program(room_name):
     return "-"
 
 def get_teacher_subject(teacher_name):
+    # ฟังก์ชันช่วยตัดชื่อ clean ชื่อครูออกจาก format "Name (Status)"
+    clean_name = teacher_name.split(" (")[0].strip()
+    
     df = st.session_state.teachers_data
-    row = df[df["ชื่อ-สกุล"] == teacher_name]
+    row = df[df["ชื่อ-สกุล"] == clean_name]
     if not row.empty: return str(row.iloc[0]["วิชาที่สอน"])
     return ""
 
@@ -173,80 +177,100 @@ def is_teacher_assigned_to_room(teacher_name, room_name):
     assigned_list = [r.strip() for r in assigned_str.split(",")]
     return room_name in assigned_list
 
-def get_available_teachers(current_room, day, period):
+def get_teachers_with_status_options(current_room, day, period):
+    """
+    คืนค่า list รายชื่อครูสำหรับ Dropdown
+    Format: "ชื่อครู" (ถ้าว่าง) หรือ "ชื่อครู (ติดสอน ห้อง...)" (ถ้าไม่ว่าง)
+    """
     all_teachers_df = st.session_state.teachers_data
-    if all_teachers_df is None or all_teachers_df.empty: return [], []
+    if all_teachers_df is None or all_teachers_df.empty: return []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
-    busy_teachers = []
+    
+    # 1. Map ว่าใครสอนห้องไหนในคาบนี้
+    busy_map = {} # {teacher_name: room_name}
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
         if r in st.session_state.schedule_data:
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots:
-                busy_teachers.append(s['teacher'])
-    available = []
+                busy_map[s['teacher']] = r
+    
+    # 2. สร้าง List Options
+    options = []
     for t in all_teachers:
-        if t not in busy_teachers:
-            if is_teacher_assigned_to_room(t, current_room):
-                available.append(t)
-    return available, busy_teachers
+        if is_teacher_assigned_to_room(t, current_room):
+            if t in busy_map:
+                options.append(f"{t} (ติดสอน {busy_map[t]})")
+            else:
+                options.append(t)
+    
+    return sorted(options)
 
-# --- [UPDATED] Robust Marathon Validation ---
-def validate_marathon_teaching(schedule_updates, current_room, day, target_prog):
+def clean_teacher_name(option_string):
+    """แปลง 'สมชาย (ติดสอน ป.1)' กลับเป็น 'สมชาย'"""
+    if "(" in option_string:
+        return option_string.split(" (")[0].strip()
+    return option_string
+
+def validate_schedule_rules(schedule_updates, current_room, day, target_prog):
     """
-    ตรวจสอบการสอนมาราธอน โดยนับรวม:
-    1. การสอนในห้องอื่น
-    2. การสอนในห้องปัจจุบัน (แต่เป็นสายอื่น ที่ไม่ได้ถูกแก้ไข)
-    3. การสอนใหม่ที่กำลังจะบันทึก
+    ตรวจสอบกฎ 2 ข้อ:
+    1. Double Booking (สอนซ้อนในเวลาเดียวกัน)
+    2. Marathon (สอนติดกันเกิน 2 คาบ)
     """
     conflicts = []
-    involved_teachers = set(schedule_updates.values())
-    involved_teachers.discard(None)
-    involved_teachers.discard("-- ว่าง --")
-    involved_teachers.discard("-- ล็อค --")
+    
+    # Extract unique teachers involved (clean names)
+    involved_teachers = set()
+    for t_opt in schedule_updates.values():
+        if t_opt not in [None, "-- ว่าง --", "-- ล็อค --"]:
+            involved_teachers.add(clean_teacher_name(t_opt))
     
     all_rooms = get_all_rooms()
     
     for teacher in involved_teachers:
+        # --- Check 1: Double Booking (Same Period) ---
+        for p, t_opt in schedule_updates.items():
+            if clean_teacher_name(t_opt) == teacher:
+                # Check if this teacher is teaching in ANY other room at THIS period
+                for r in all_rooms:
+                    if r == current_room: continue
+                    slots = st.session_state.schedule_data[r][day][p]
+                    for s in slots:
+                        if s['teacher'] == teacher:
+                            conflicts.append(f"⛔ **สอนซ้อน:** ครู {teacher} สอนที่ห้อง {r} ในคาบ {p} อยู่แล้ว")
+
+        # --- Check 2: Marathon (Consecutive Periods) ---
         teaching_periods = []
-        
-        # วนลูปทุกห้องเพื่อหาคาบสอน
+        # Loop all rooms/periods to build timeline
         for r in all_rooms:
             for p in range(1, 10):
                 is_teaching = False
                 
                 if r == current_room:
-                    # กรณีห้องปัจจุบัน: ต้องผสมข้อมูลเก่า (สายอื่น) + ข้อมูลใหม่ (สายที่แก้)
-                    
-                    # 1. เช็คข้อมูลเดิมใน DB (เฉพาะสายอื่นที่ไม่ได้แก้)
+                    # Mixed source: DB (other progs) + Form (this prog)
                     existing_slots = st.session_state.schedule_data[r][day][p]
                     for s in existing_slots:
-                        # ถ้าเป็น slot ของสายอื่น (เช่น เราแก้ IEP แต่มี slot ของ EEP อยู่)
                         if s.get('program', 'รวมทุกสาย') != target_prog:
-                            if s['teacher'] == teacher:
-                                is_teaching = True
+                            if s['teacher'] == teacher: is_teaching = True
                     
-                    # 2. เช็คข้อมูลใหม่จาก Form (เฉพาะสายที่กำลังแก้)
                     if p in schedule_updates:
-                        if schedule_updates[p] == teacher:
+                        if clean_teacher_name(schedule_updates[p]) == teacher:
                             is_teaching = True
-                            
                 else:
-                    # กรณีห้องอื่น: เช็คจาก DB ได้เลย
+                    # DB source
                     slots = st.session_state.schedule_data[r][day][p]
                     for s in slots:
-                        if s['teacher'] == teacher:
-                            is_teaching = True
+                        if s['teacher'] == teacher: is_teaching = True
                 
                 if is_teaching:
                     teaching_periods.append(p)
         
-        # ตรวจสอบการติดกัน
+        # Analyze consecutive
         teaching_periods = sorted(list(set(teaching_periods)))
         consecutive = 1
         max_consecutive = 1
-        
         for i in range(1, len(teaching_periods)):
             if teaching_periods[i] == teaching_periods[i-1] + 1:
                 consecutive += 1
@@ -255,20 +279,21 @@ def validate_marathon_teaching(schedule_updates, current_room, day, target_prog)
                 consecutive = 1
         
         if max_consecutive > 2:
-            conflicts.append(f"⚠️ ครู {teacher} สอนติดกัน {max_consecutive} คาบ (คาบ {teaching_periods})")
+            conflicts.append(f"⚠️ **มาราธอน:** ครู {teacher} สอนติดกัน {max_consecutive} คาบ (คาบ {teaching_periods})")
             
     return conflicts
 
 def apply_schedule_updates(grade, day, new_data, target_prog):
-    for p, new_teacher in new_data.items():
-        if new_teacher == "-- ล็อค --": continue
+    for p, t_opt in new_data.items():
+        if t_opt == "-- ล็อค --": continue
         
         current_slots = st.session_state.schedule_data[grade][day][p]
         kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog]
         
-        if new_teacher != "-- ว่าง --":
-            subj = get_teacher_subject(new_teacher)
-            new_slot = {"teacher": new_teacher, "subject": subj, "program": target_prog}
+        if t_opt != "-- ว่าง --":
+            real_name = clean_teacher_name(t_opt)
+            subj = get_teacher_subject(real_name)
+            new_slot = {"teacher": real_name, "subject": subj, "program": target_prog}
             kept_slots.append(new_slot)
         
         st.session_state.schedule_data[grade][day][p] = kept_slots
@@ -521,7 +546,7 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# === MENU 2: 📅 จัดตารางสอน ===
+# === MENU 2: 📅 จัดตารางสอน (Smart Dropdown + Double Booking Check) ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
     current_rooms_list = get_all_rooms()
@@ -549,7 +574,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                 st.selectbox("2. สายการเรียน:", ["รวมทุกสาย"], disabled=True)
 
         with st.form(key="daily_editor_form"):
-            st.info(f"💡 ระบบแสดงเฉพาะครูที่ **ว่าง** และ **สอนห้อง {selected_grade}** เท่านั้น")
+            st.info(f"💡 รายชื่อครูจะแสดง **(ติดสอน...)** หากไม่ว่าง แต่สามารถเลือกได้ (ต้องกดยืนยัน)")
             st.markdown(f"#### 📅 วัน{edit_day} ({target_prog_for_edit})")
             
             new_schedule_data = {} 
@@ -558,10 +583,8 @@ elif menu == "2. 📅 จัดตารางสอน":
             for p in range(1, 10):
                 col_idx = (p - 1) % 3
                 with cols[col_idx]:
-                    # Find 'Combined' slot (Lock Logic)
                     combined_slot = next((s for s in st.session_state.schedule_data[selected_grade][edit_day][p] if s.get('program', 'รวมทุกสาย') == 'รวมทุกสาย'), None)
                     
-                    # Determine Current Teacher for THIS program
                     current_slots = st.session_state.schedule_data[selected_grade][edit_day][p]
                     current_teacher = None
                     for s in current_slots:
@@ -569,30 +592,32 @@ elif menu == "2. 📅 จัดตารางสอน":
                             current_teacher = s['teacher']
                             break
                     
-                    # [LOCK LOGIC]
                     if target_prog_for_edit != "รวมทุกสาย" and combined_slot:
                         st.markdown(f"**คาบ {p}**: <span style='color:orange; font-weight:bold'>🔒 เรียนรวมกับ {combined_slot['teacher']}</span>", unsafe_allow_html=True)
                         st.selectbox("ล็อค", ["-- ใช้ตารางรวม --"], disabled=True, key=f"sel_{p}_locked", label_visibility="collapsed")
                         new_schedule_data[p] = "-- ล็อค --"
                     else:
-                        # Normal Edit Mode
                         if current_teacher:
                             st.markdown(f"**คาบ {p}**: <span style='color:red; font-weight:bold'>❌ มีคนสอน: {current_teacher}</span>", unsafe_allow_html=True)
                         else:
                             st.markdown(f"**คาบ {p}**: <span style='color:green; font-weight:bold'>✅ ว่าง</span>", unsafe_allow_html=True)
 
-                        avail_teachers, busy_teachers = get_available_teachers(selected_grade, edit_day, p)
-                        options = ["-- ว่าง --"] + avail_teachers
-                        if current_teacher and current_teacher not in options:
-                            options.append(current_teacher) 
+                        # [UPDATED] Use new dropdown options with status
+                        options_with_status = ["-- ว่าง --"] + get_teachers_with_status_options(selected_grade, edit_day, p)
                         
+                        # Find current selection index
                         idx = 0
-                        if current_teacher in options:
-                            idx = options.index(current_teacher)
-                            
+                        if current_teacher:
+                            # Try to find current teacher in the new status list
+                            # They might be labeled "Name (ติดสอน...)" or just "Name"
+                            for i, opt in enumerate(options_with_status):
+                                if clean_teacher_name(opt) == current_teacher:
+                                    idx = i
+                                    break
+                        
                         selected = st.selectbox(
                             f"เลือกครู (คาบ {p})",
-                            options=options,
+                            options=options_with_status,
                             index=idx,
                             key=f"sel_{p}",
                             label_visibility="collapsed"
@@ -603,15 +628,14 @@ elif menu == "2. 📅 จัดตารางสอน":
             submit_btn = st.form_submit_button("💾 บันทึกตารางวันนี้", type="primary", use_container_width=True)
             
             if submit_btn:
-                # --- VALIDATION: MAX 2 SUBJECTS PER PERIOD ---
                 slot_limit_exceeded = []
-                for p, new_teacher in new_schedule_data.items():
-                    if new_teacher == "-- ล็อค --": continue
+                for p, t_opt in new_schedule_data.items():
+                    if t_opt == "-- ล็อค --": continue
                     
                     current_slots_in_db = st.session_state.schedule_data[selected_grade][edit_day][p]
                     kept_slots = [s for s in current_slots_in_db if s.get('program', 'รวมทุกสาย') != target_prog_for_edit]
                     new_count = len(kept_slots)
-                    if new_teacher != "-- ว่าง --":
+                    if t_opt != "-- ว่าง --":
                         new_count += 1
                     if new_count > 2:
                         slot_limit_exceeded.append(f"คาบ {p}")
@@ -623,10 +647,10 @@ elif menu == "2. 📅 จัดตารางสอน":
                     updates_map = {}
                     for p, t in new_schedule_data.items():
                         if t != "-- ว่าง --" and t != "-- ล็อค --":
-                            updates_map[p] = t
+                            updates_map[p] = t # Pass raw option string (validation will clean it)
                     
-                    # [UPDATED] Check Marathon (Include All Modes)
-                    conflicts = validate_marathon_teaching(updates_map, selected_grade, edit_day, target_prog_for_edit)
+                    # Check Rules
+                    conflicts = validate_schedule_rules(updates_map, selected_grade, edit_day, target_prog_for_edit)
                     
                     if conflicts:
                         st.session_state.marathon_confirm_data = {
@@ -643,10 +667,10 @@ elif menu == "2. 📅 จัดตารางสอน":
                         time.sleep(1)
                         st.rerun()
 
-        # ส่วนยืนยันมาราธอน
+        # ส่วนยืนยัน (Double Booking / Marathon)
         if st.session_state.marathon_confirm_data:
             data = st.session_state.marathon_confirm_data
-            st.warning("⚠️ **แจ้งเตือน: พบการสอนมาราธอน**")
+            st.warning("⚠️ **แจ้งเตือน: พบข้อขัดแย้งของตารางสอน**")
             for c in data['conflicts']:
                 st.error(c)
             st.info("คุณต้องการยืนยันการบันทึกหรือไม่? (กด 'ยืนยัน' เพื่อบันทึกแม้จะมีข้อแจ้งเตือน)")
@@ -655,7 +679,7 @@ elif menu == "2. 📅 จัดตารางสอน":
             if col_conf1.button("✅ ยืนยันการบันทึก", type="primary"):
                 apply_schedule_updates(data['grade'], data['day'], data['new_data'], data['target_prog'])
                 st.session_state.marathon_confirm_data = None
-                st.success("บันทึกข้อมูลเรียบร้อย (แบบมาราธอน)")
+                st.success("บันทึกข้อมูลเรียบร้อย (ยอมรับข้อแจ้งเตือน)")
                 time.sleep(1)
                 st.rerun()
             if col_conf2.button("❌ ยกเลิก"):
