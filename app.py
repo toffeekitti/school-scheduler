@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 
 # --- 1. ตั้งค่าพื้นฐาน ---
-st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Fee", layout="wide")
+st.set_page_config(page_title="ระบบจัดตารางสอนออนไลน์ - Kru Phi", layout="wide")
 
 # เชื่อมต่อ Google Sheets
 @st.cache_resource
@@ -481,7 +481,7 @@ if menu == "1. 🗓️ ตารางเรียนรวม (Master View)":
         master_html = render_master_matrix_html(target_rooms, st.session_state.schedule_data)
         st.markdown(master_html, unsafe_allow_html=True)
 
-# === MENU 2 ===
+# === MENU 2: 📅 จัดตารางสอน (With Improved Indicators) ===
 elif menu == "2. 📅 จัดตารางสอน":
     st.header("จัดตารางสอน (Auto-Save 💾)")
     current_rooms_list = get_all_rooms()
@@ -525,6 +525,12 @@ elif menu == "2. 📅 จัดตารางสอน":
                             current_teacher = s['teacher']
                             break
                     
+                    # [VISUAL INDICATOR]
+                    if current_teacher:
+                        st.markdown(f"**คาบ {p}**: <span style='color:red; font-weight:bold'>❌ มีคนสอน: {current_teacher}</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"**คาบ {p}**: <span style='color:green; font-weight:bold'>✅ ว่าง</span>", unsafe_allow_html=True)
+
                     avail_teachers, busy_teachers = get_available_teachers(selected_grade, edit_day, p)
                     options = ["-- ว่าง --"] + avail_teachers
                     if current_teacher and current_teacher not in options:
@@ -535,10 +541,11 @@ elif menu == "2. 📅 จัดตารางสอน":
                         idx = options.index(current_teacher)
                         
                     selected = st.selectbox(
-                        f"คาบ {p} ({PERIODS[p]})",
+                        f"เลือกครู (คาบ {p})", # Label hidden or simplified
                         options=options,
                         index=idx,
-                        key=f"sel_{p}"
+                        key=f"sel_{p}",
+                        label_visibility="collapsed" # Hide repeat label
                     )
                     new_schedule_data[p] = selected
 
@@ -802,7 +809,6 @@ elif menu == "5. 🖨️ ระบบรายงาน":
         all_rooms = get_all_rooms()
         all_rooms.sort(key=natural_sort_key)
         
-        # Smart Dropdown: Level + Room
         unique_levels = sorted(list(set([r.split('/')[0] for r in all_rooms if '/' in r])), key=natural_sort_key)
         report_options = ["-- กรุณาเลือก --"]
         for l in unique_levels:
@@ -892,9 +898,6 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
     
     data_list = []
     for t_name, stats in teacher_stats.items():
-        # [UPDATED FILTER LOGIC]
-        # ถ้าเลือก "ภาพรวม" -> โชว์ทุกคน (รวมคนสอน 0 คาบ)
-        # ถ้าเลือก "เจาะจงชั้น" -> โชว์เฉพาะคนที่มีสอน (count > 0)
         show_teacher = True
         if selected_filter != "ภาพรวมทั้งโรงเรียน":
             if stats["count"] == 0:
@@ -938,4 +941,3 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
         )
     else:
         st.warning("ไม่พบข้อมูลการสอนในระดับชั้นที่เลือก")
-
