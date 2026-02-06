@@ -141,7 +141,6 @@ if 'data_initialized' not in st.session_state:
         
     st.session_state.data_initialized = True
 
-# ตัวแปรสำหรับระบบยืนยันมาราธอน
 if 'marathon_confirm_data' not in st.session_state:
     st.session_state.marathon_confirm_data = None
 
@@ -177,7 +176,6 @@ def get_available_teachers(current_room, day, period):
     if all_teachers_df is None or all_teachers_df.empty: return [], []
     all_teachers = all_teachers_df["ชื่อ-สกุล"].unique().tolist()
     busy_teachers = []
-    
     all_rooms = get_all_rooms()
     for r in all_rooms:
         if r == current_room: continue
@@ -185,13 +183,11 @@ def get_available_teachers(current_room, day, period):
             slots = st.session_state.schedule_data[r][day][period]
             for s in slots:
                 busy_teachers.append(s['teacher'])
-    
     available = []
     for t in all_teachers:
         if t not in busy_teachers:
             if is_teacher_assigned_to_room(t, current_room):
                 available.append(t)
-                
     return available, busy_teachers
 
 def validate_marathon_teaching(schedule_updates, current_room, day):
@@ -226,16 +222,13 @@ def validate_marathon_teaching(schedule_updates, current_room, day):
     return conflicts
 
 def apply_schedule_updates(grade, day, new_data, target_prog):
-    """ฟังก์ชันสำหรับบันทึกข้อมูลจริง"""
     for p, new_teacher in new_data.items():
         current_slots = st.session_state.schedule_data[grade][day][p]
         kept_slots = [s for s in current_slots if s.get('program', 'รวมทุกสาย') != target_prog]
-        
         if new_teacher != "-- ว่าง --":
             subj = get_teacher_subject(new_teacher)
             new_slot = {"teacher": new_teacher, "subject": subj, "program": target_prog}
             kept_slots.append(new_slot)
-        
         st.session_state.schedule_data[grade][day][p] = kept_slots
     save_data_to_gsheets()
 
@@ -376,10 +369,12 @@ def generate_teacher_report_html():
     html += "</body></html>"
     return html
 
+# --- [UPDATED] Report Logic: Separate Tables per Program ---
 def generate_grade_report_html(target_level):
     all_rooms = get_all_rooms()
     target_rooms = [r for r in all_rooms if target_level in r]
     target_rooms.sort(key=natural_sort_key)
+    
     html = f"""<html><head><title>ตารางเรียน {target_level}</title><style>
             body {{ font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }}
             h1 {{ text-align: center; font-size: 28px; }}
@@ -395,31 +390,42 @@ def generate_grade_report_html(target_level):
             .teacher {{ font-size: 0.9em; }}
             .prog-badge {{ font-size: 0.8em; background-color: #ddd; padding: 2px 4px; border-radius: 4px; margin-left: 4px; }}
         </style></head><body><h1>ตารางเรียนระดับชั้น {target_level}</h1><p style='text-align:center'>ข้อมูล ณ {datetime.now().strftime("%d/%m/%Y %H:%M")}</p><hr>"""
+    
     for room in target_rooms:
-        program = get_room_program(room)
-        html += f"""<div class="section"><h3>ห้องเรียน: {room} <span style="font-size:0.8em; color:#555;">(สายการเรียน: {program})</span></h3>
-            <table><thead><tr><th class="day-col">วัน</th>"""
-        for p in range(1, 10):
-            html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
-            if p in BREAKS: html += f"<th class='break-col'></th>"
-        html += "</tr></thead><tbody>"
-        for idx, d in enumerate(DAYS):
-            html += f"<tr><td class='day-col'>{d}</td>"
+        program_str = get_room_program(room)
+        programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
+        if not programs_list: programs_list = ["รวมทุกสาย"]
+        
+        for prog in programs_list:
+            html += f"""<div class="section"><h3>ห้องเรียน: {room} <span style="font-size:0.8em; color:#555;">(สายการเรียน: {prog})</span></h3>
+                <table><thead><tr><th class="day-col">วัน</th>"""
             for p in range(1, 10):
-                slots = st.session_state.schedule_data[room][d][p]
-                if not slots: cell = "-"
-                else:
-                    items = []
-                    for s in slots:
-                        prog_text = s.get('program', 'รวม')
-                        prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
-                        items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
-                    cell = "<hr style='margin:2px'>".join(items)
-                html += f"<td>{cell}</td>"
-                if p in BREAKS:
-                    if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
-            html += "</tr>"
-        html += "</tbody></table></div><div class='page-break'></div>"
+                html += f"<th>{p}<br><span style='font-size:0.7em;'>{PERIODS[p]}</span></th>"
+                if p in BREAKS: html += f"<th class='break-col'></th>"
+            html += "</tr></thead><tbody>"
+            for idx, d in enumerate(DAYS):
+                html += f"<tr><td class='day-col'>{d}</td>"
+                for p in range(1, 10):
+                    slots = st.session_state.schedule_data[room][d][p]
+                    # Filter Logic
+                    cell_items = []
+                    if slots:
+                        for s in slots:
+                            # Show if exact match OR 'รวมทุกสาย'
+                            if s.get('program', 'รวมทุกสาย') == prog or s.get('program', 'รวมทุกสาย') == 'รวมทุกสาย':
+                                prog_text = s.get('program', 'รวม')
+                                prog_html = f"<span class='prog-badge'>{prog_text}</span>" if prog_text != "รวมทุกสาย" else ""
+                                cell_items.append(f"<div class='subject'>{s['subject']} {prog_html}</div><div class='teacher'>({s['teacher']})</div>")
+                    
+                    if not cell_items: cell = "-"
+                    else: cell = "<hr style='margin:2px'>".join(cell_items)
+                    
+                    html += f"<td>{cell}</td>"
+                    if p in BREAKS:
+                        if idx == 0: html += f"<td class='break-col' rowspan='5'>{BREAKS[p]}</td>"
+                html += "</tr>"
+            html += "</tbody></table></div><div class='page-break'></div>"
+            
     html += "</body></html>"
     return html
 
@@ -535,7 +541,7 @@ elif menu == "2. 📅 จัดตารางสอน":
                     time.sleep(1)
                     st.rerun()
 
-        # ส่วนยืนยันมาราธอน (อยู่นอก Form)
+        # ส่วนยืนยันมาราธอน
         if st.session_state.marathon_confirm_data:
             data = st.session_state.marathon_confirm_data
             st.warning("⚠️ **แจ้งเตือน: พบการสอนมาราธอน**")
@@ -558,10 +564,8 @@ elif menu == "2. 📅 จัดตารางสอน":
 
         # --- 2. ส่วนตารางเรียน (View) ---
         c_head, c_reset = st.columns([0.8, 0.2])
-        
         with c_head:
             st.subheader(f"👀 ตารางเรียนปัจจุบัน: {selected_grade}")
-            
         with c_reset:
             with st.expander("🗑️ ล้างข้อมูลทั้งหมด", expanded=False):
                 if st.button("ยืนยัน", type="primary", key="btn_reset_confirm"):
@@ -711,23 +715,30 @@ elif menu == "5. 🖨️ ระบบรายงาน":
             st.markdown(render_beautiful_table("Report", temp_data), unsafe_allow_html=True)
 
     with tab_grade:
-        st.subheader("รายงานตารางเรียนรายระดับชั้น")
+        st.subheader("รายงานตารางเรียนรายระดับชั้น (แยกตามสายการเรียน)")
         col_g1, col_g2 = st.columns([1, 2])
         with col_g1: sel_level = st.text_input("ค้นหาระดับชั้น (เช่น ป.4)", value="ป.4")
         with col_g2:
             st.write(""); st.write("")
             if sel_level:
+                # [UPDATED] ใช้ฟังก์ชันใหม่ที่สร้างตารางแยกสาย
                 html_report_grade = generate_grade_report_html(sel_level)
-                st.download_button(f"📥 ดาวน์โหลด Report ({sel_level})", data=html_report_grade, file_name=f"grade_{sel_level}_report.html", mime="text/html", type="primary")
+                st.download_button(f"📥 ดาวน์โหลด Report แยกสายการเรียน ({sel_level})", data=html_report_grade, file_name=f"grade_{sel_level}_report.html", mime="text/html", type="primary")
+        
         if sel_level:
             st.markdown("---")
             st.write(f"**ตัวอย่างห้องที่พบ:**")
             found_rooms = [r for r in get_all_rooms() if sel_level in r]
             if found_rooms:
                 example_room = found_rooms[0]
-                prog = get_room_program(example_room)
-                st.markdown(f"**ห้อง: {example_room} (สาย: {prog})**")
-                st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data), unsafe_allow_html=True)
+                program_str = get_room_program(example_room)
+                programs_list = [p.strip() for p in str(program_str).split(",") if p.strip()]
+                if not programs_list: programs_list = ["รวมทุกสาย"]
+                
+                st.markdown(f"**ห้อง: {example_room}**")
+                for prog in programs_list:
+                    st.write(f"🔹 **สาย: {prog}**")
+                    st.markdown(render_beautiful_table(example_room, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
             else:
                 st.warning("ไม่พบห้องเรียนที่ค้นหา")
 
@@ -738,13 +749,14 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
     filter_options = ["ภาพรวมทั้งโรงเรียน"] + unique_levels
     selected_filter = st.selectbox("🔍 เลือกดูข้อมูลเฉพาะระดับชั้น:", filter_options)
     
-    teacher_counts = {}
-    if selected_filter == "ภาพรวมทั้งโรงเรียน":
-        all_teachers = st.session_state.teachers_data["ชื่อ-สกุล"].tolist()
-        for t in all_teachers: teacher_counts[t] = 0
+    teacher_stats = {}
+    all_teachers = st.session_state.teachers_data["ชื่อ-สกุล"].tolist()
+    for t in all_teachers:
+        teacher_stats[t] = { "count": 0, "rooms": set(), "programs": set() }
     
     total_slots = 0
     schedule_data = st.session_state.schedule_data
+    
     for room in schedule_data:
         if selected_filter != "ภาพรวมทั้งโรงเรียน":
             if not room.startswith(selected_filter):
@@ -754,22 +766,41 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
                 slots = schedule_data[room][day][period]
                 for s in slots:
                     t_name = s['teacher']
-                    if t_name in teacher_counts:
-                        teacher_counts[t_name] += 1
+                    prog = s.get('program', 'รวม')
+                    if t_name in teacher_stats:
+                        teacher_stats[t_name]["count"] += 1
+                        teacher_stats[t_name]["rooms"].add(room)
+                        teacher_stats[t_name]["programs"].add(prog)
                     else:
-                        teacher_counts[t_name] = 1 
+                        teacher_stats[t_name] = { "count": 1, "rooms": {room}, "programs": {prog} }
                     total_slots += 1
 
+    active_teachers_count = sum(1 for t in teacher_stats if teacher_stats[t]["count"] > 0)
     c1, c2, c3 = st.columns(3)
-    c1.metric("จำนวนครู (ในขอบเขตนี้)", f"{len(teacher_counts)} คน")
+    c1.metric("จำนวนครู (ที่มีสอน)", f"{active_teachers_count} คน")
     c2.metric(f"ยอดสอนรวม ({selected_filter})", f"{total_slots} คาบ")
     
     st.markdown("---")
-    if teacher_counts:
-        df_stats = pd.DataFrame(list(teacher_counts.items()), columns=["ชื่อครู", "จำนวนคาบ/สัปดาห์"])
+    
+    data_list = []
+    for t_name, stats in teacher_stats.items():
+        if stats["count"] >= 0:
+            sorted_rooms = sorted(list(stats["rooms"]), key=natural_sort_key)
+            sorted_progs = sorted(list(stats["programs"]))
+            data_list.append({
+                "ชื่อครู": t_name,
+                "จำนวนคาบ/สัปดาห์": stats["count"],
+                "ห้องที่สอน": ", ".join(sorted_rooms),
+                "สายการเรียน": ", ".join(sorted_progs)
+            })
+            
+    if data_list:
+        df_stats = pd.DataFrame(data_list)
         df_stats = df_stats.sort_values(by="จำนวนคาบ/สัปดาห์", ascending=False).reset_index(drop=True)
+        
         st.subheader(f"📊 กราฟแสดงจำนวนคาบสอน ({selected_filter})")
-        st.bar_chart(df_stats.set_index("ชื่อครู"))
+        st.bar_chart(df_stats.set_index("ชื่อครู")["จำนวนคาบ/สัปดาห์"])
+        
         st.markdown("---")
         st.subheader("📋 ตารางจัดลำดับภาระงาน")
         st.dataframe(
@@ -780,7 +811,9 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
                     format="%d", 
                     min_value=0, 
                     max_value=30
-                )
+                ),
+                "ห้องที่สอน": st.column_config.TextColumn("ห้องที่สอน", width="medium"),
+                "สายการเรียน": st.column_config.TextColumn("สายการเรียน", width="small")
             },
             use_container_width=True
         )
