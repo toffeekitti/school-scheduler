@@ -41,7 +41,6 @@ def load_data_from_gsheets():
         w_teach = sh.worksheet("Teachers")
         teachers_data = w_teach.get_all_records()
         teachers_df = pd.DataFrame(teachers_data)
-        # Ensure columns exist even if empty
         if teachers_df.empty:
             teachers_df = pd.DataFrame(columns=["ชื่อ-สกุล", "วิชาที่สอน", "ระดับชั้นที่สอน"])
         
@@ -616,7 +615,6 @@ elif menu == "2. 📅 จัดตารางสอน":
                 st.subheader(f"🔷 สาย: {prog}")
                 st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
 
-# === MENU 3: 👥 ข้อมูลของครู (Import/Export) ===
 elif menu == "3. 👥 ข้อมูลของครู":
     st.header("จัดการข้อมูลครูผู้สอน")
     current_rooms_list = get_all_rooms()
@@ -894,7 +892,15 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
     
     data_list = []
     for t_name, stats in teacher_stats.items():
-        if stats["count"] >= 0:
+        # [UPDATED FILTER LOGIC]
+        # ถ้าเลือก "ภาพรวม" -> โชว์ทุกคน (รวมคนสอน 0 คาบ)
+        # ถ้าเลือก "เจาะจงชั้น" -> โชว์เฉพาะคนที่มีสอน (count > 0)
+        show_teacher = True
+        if selected_filter != "ภาพรวมทั้งโรงเรียน":
+            if stats["count"] == 0:
+                show_teacher = False
+        
+        if show_teacher:
             sorted_rooms = sorted(list(stats["rooms"]), key=natural_sort_key)
             sorted_progs = sorted(list(stats["programs"]))
             data_list.append({
@@ -909,7 +915,10 @@ elif menu == "6. 📊 Dashboard สรุปยอด":
         df_stats = df_stats.sort_values(by="จำนวนคาบ/สัปดาห์", ascending=False).reset_index(drop=True)
         
         st.subheader(f"📊 กราฟแสดงจำนวนคาบสอน ({selected_filter})")
-        st.bar_chart(df_stats.set_index("ชื่อครู")["จำนวนคาบ/สัปดาห์"])
+        if not df_stats.empty:
+            st.bar_chart(df_stats.set_index("ชื่อครู")["จำนวนคาบ/สัปดาห์"])
+        else:
+            st.info("ไม่พบข้อมูลการสอนในเงื่อนไขนี้")
         
         st.markdown("---")
         st.subheader("📋 ตารางจัดลำดับภาระงาน")
