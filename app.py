@@ -41,6 +41,9 @@ def load_data_from_gsheets():
         w_teach = sh.worksheet("Teachers")
         teachers_data = w_teach.get_all_records()
         teachers_df = pd.DataFrame(teachers_data)
+        # Ensure columns exist even if empty
+        if teachers_df.empty:
+            teachers_df = pd.DataFrame(columns=["ชื่อ-สกุล", "วิชาที่สอน", "ระดับชั้นที่สอน"])
         
         w_class = sh.worksheet("Classrooms")
         class_data = w_class.get_all_records()
@@ -369,7 +372,6 @@ def generate_teacher_report_html():
     html += "</body></html>"
     return html
 
-# --- [UPDATED] Generator accepts specific room list now ---
 def generate_grade_report_html(target_rooms_list, title_text):
     html = f"""<html><head><title>ตารางเรียน {title_text}</title><style>
             body {{ font-family: 'Sarabun', 'Angsana New', sans-serif; padding: 20px; }}
@@ -614,13 +616,69 @@ elif menu == "2. 📅 จัดตารางสอน":
                 st.subheader(f"🔷 สาย: {prog}")
                 st.markdown(render_beautiful_table(selected_grade, st.session_state.schedule_data, filter_program=prog), unsafe_allow_html=True)
 
+# === MENU 3: 👥 ข้อมูลของครู (Import/Export) ===
 elif menu == "3. 👥 ข้อมูลของครู":
     st.header("จัดการข้อมูลครูผู้สอน")
     current_rooms_list = get_all_rooms()
     existing_names = st.session_state.teachers_data["ชื่อ-สกุล"].tolist()
-    option_list = ["-- เพิ่มครูคนใหม่ --"] + existing_names
     
-    st.subheader("✏️ เพิ่ม / แก้ไข ข้อมูลครู")
+    # --- ส่วน Import / Export ---
+    with st.expander("📂 Import / Export ข้อมูลครู (CSV/Excel)", expanded=False):
+        c_ex, c_im = st.columns(2)
+        
+        # EXPORT
+        with c_ex:
+            st.markdown("#### 📥 ส่งออกข้อมูล (Export)")
+            csv_data = st.session_state.teachers_data.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="ดาวน์โหลดไฟล์รายชื่อครู (CSV)",
+                data=csv_data,
+                file_name="teachers_list.csv",
+                mime="text/csv",
+                type="primary"
+            )
+            st.caption("*ไฟล์นี้สามารถเปิดใน Excel ได้ทันที")
+
+        # IMPORT
+        with c_im:
+            st.markdown("#### 📤 นำเข้าข้อมูล (Import)")
+            uploaded_file = st.file_uploader("อัปโหลดไฟล์ (CSV หรือ Excel)", type=['csv', 'xlsx'])
+            
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_upload = pd.read_csv(uploaded_file)
+                    else:
+                        df_upload = pd.read_excel(uploaded_file)
+
+                    # Validate columns
+                    req_cols = ["ชื่อ-สกุล", "วิชาที่สอน", "ระดับชั้นที่สอน"]
+                    
+                    if all(col in df_upload.columns for col in req_cols):
+                        st.success("✅ รูปแบบไฟล์ถูกต้อง")
+                        st.dataframe(df_upload.head(3), height=100)
+                        
+                        if st.button("ยืนยันการนำเข้าข้อมูล (เพิ่ม/อัปเดต)"):
+                            current_df = st.session_state.teachers_data
+                            # Combine and Remove duplicates based on name (Keep NEW)
+                            combined_df = pd.concat([current_df, df_upload], ignore_index=True)
+                            combined_df = combined_df.drop_duplicates(subset=['ชื่อ-สกุล'], keep='last')
+                            
+                            st.session_state.teachers_data = combined_df
+                            save_data_to_gsheets()
+                            st.success("นำเข้าข้อมูลเรียบร้อย!")
+                            time.sleep(1)
+                            st.rerun()
+                    else:
+                        st.error(f"❌ รูปแบบไฟล์ไม่ถูกต้อง ต้องมีคอลัมน์: {req_cols}")
+                except Exception as e:
+                    st.error(f"อ่านไฟล์ไม่ได้: {e}")
+
+    st.markdown("---")
+
+    # --- ส่วนแก้ไขรายคน (เดิม) ---
+    option_list = ["-- เพิ่มครูคนใหม่ --"] + existing_names
+    st.subheader("✏️ เพิ่ม / แก้ไข ข้อมูลครู (รายบุคคล)")
     selected_option = st.selectbox("เลือกครูที่ต้องการแก้ไข:", option_list)
     
     default_name, default_subject, default_rooms = "", "", []
@@ -743,20 +801,16 @@ elif menu == "5. 🖨️ ระบบรายงาน":
     with tab_grade:
         st.subheader("รายงานตารางเรียนรายระดับชั้น")
         
-        # --- [NEW] SMART DROPDOWN ---
         all_rooms = get_all_rooms()
         all_rooms.sort(key=natural_sort_key)
         
-        # 1. หา Grade Level ทั้งหมด
+        # Smart Dropdown: Level + Room
         unique_levels = sorted(list(set([r.split('/')[0] for r in all_rooms if '/' in r])), key=natural_sort_key)
-        
-        # 2. สร้างตัวเลือก (Options)
         report_options = ["-- กรุณาเลือก --"]
         for l in unique_levels:
-            report_options.append(f"📦 ระดับชั้น {l} (ทั้งหมด)") # เหมาทั้งชั้น
-            # Add rooms
+            report_options.append(f"📦 ระดับชั้น {l} (ทั้งหมด)")
             rooms_in_level = [r for r in all_rooms if r.startswith(l)]
-            report_options.extend(rooms_in_level) # เพิ่มรายชื่อห้องต่อท้าย
+            report_options.extend(rooms_in_level)
             
         selection = st.selectbox("เลือกห้องหรือระดับชั้นที่ต้องการพิมพ์:", report_options)
         
@@ -765,13 +819,11 @@ elif menu == "5. 🖨️ ระบบรายงาน":
         
         if selection != "-- กรุณาเลือก --":
             if "(ทั้งหมด)" in selection:
-                # กรณีเลือกเหมาชั้น
-                level_key = selection.split(" ")[2] # ดึงคำว่า "ป.4" ออกมา
+                level_key = selection.split(" ")[2]
                 target_rooms_for_report = [r for r in all_rooms if r.startswith(level_key)]
                 report_title = f"ระดับชั้น {level_key}"
                 file_name_dl = f"grade_{level_key}_all_report.html"
             else:
-                # กรณีเลือกห้องเดียว
                 target_rooms_for_report = [selection]
                 report_title = f"ห้อง {selection}"
                 file_name_dl = f"room_{selection}_report.html"
